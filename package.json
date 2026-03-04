@@ -1,0 +1,26 @@
+{
+  "name": "goo-contracts",
+  "version": "1.0.0",
+  "description": "Goo Agent on-chain contracts — ERC-20 token with Treasury, lifecycle state machine, SurvivalSell, CTO; ERC-721 Registry with ERC-8004 adapter",
+  "license": "MIT",
+  "files": [
+    "contracts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/goo-contracts.git"
+  },
+  "keywords": [
+    "goo",
+    "agent",
+    "erc20",
+    "erc721",
+    "erc-8004",
+    "solidity",
+    "lifecycle",
+    "treasury",
+    "cto"
+  ],
+  "peerDependencies": {},
+  "peerDependenciesMeta": {}
+}
