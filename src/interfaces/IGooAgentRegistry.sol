@@ -27,15 +27,14 @@ interface IERC8004 {
 ///   - Token address = Agent identity (primary); agentId NFT = ERC-8004 adapter
 ///   - ERC-165 supportsInterface declares IERC721 + IERC8004 support
 interface IGooAgentRegistry is IERC8004, IERC165 {
-
     // ─── Structs ──────────────────────────────────────────────────────────
 
     struct AgentRecord {
-        address tokenContract;   // The agent's ERC-20 token (IGooAgentToken)
-        address agentWallet;     // Runtime wallet address
-        address owner;           // Current owner (creator initially)
-        string  genomeURI;       // IPFS hash or URI for agent genome/config
-        uint256 registeredAt;    // block.timestamp of registration
+        address tokenContract; // The agent's ERC-20 token (IGooAgentToken)
+        address agentWallet; // Runtime wallet address
+        address owner; // Current owner (creator initially)
+        string genomeURI; // IPFS hash or URI for agent genome/config
+        uint256 registeredAt; // block.timestamp of registration
     }
 
     // ─── Registration ─────────────────────────────────────────────────────
@@ -52,11 +51,9 @@ interface IGooAgentRegistry is IERC8004, IERC165 {
     /// @param agentWallet   The agent's runtime wallet address
     /// @param genomeURI     IPFS hash or URI pointing to agent genome/config
     /// @return agentId      Auto-incremented unique identifier (ERC-721 tokenId)
-    function registerAgent(
-        address tokenContract,
-        address agentWallet,
-        string calldata genomeURI
-    ) external returns (uint256 agentId);
+    function registerAgent(address tokenContract, address agentWallet, string calldata genomeURI)
+        external
+        returns (uint256 agentId);
 
     // ─── Identity Lookups ─────────────────────────────────────────────────
 
@@ -130,23 +127,12 @@ interface IGooAgentRegistry is IERC8004, IERC165 {
         address indexed tokenContract,
         address indexed owner,
         address agentWallet,
-        string  genomeURI
+        string genomeURI
     );
 
-    event AgentWalletUpdated(
-        uint256 indexed agentId,
-        address indexed oldWallet,
-        address indexed newWallet
-    );
+    event AgentWalletUpdated(uint256 indexed agentId, address indexed oldWallet, address indexed newWallet);
 
-    event GenomeURIUpdated(
-        uint256 indexed agentId,
-        string  newURI
-    );
+    event GenomeURIUpdated(uint256 indexed agentId, string newURI);
 
-    event AgentOwnershipTransferred(
-        uint256 indexed agentId,
-        address indexed oldOwner,
-        address indexed newOwner
-    );
+    event AgentOwnershipTransferred(uint256 indexed agentId, address indexed oldOwner, address indexed newOwner);
 }

@@ -2,31 +2,31 @@
 pragma solidity ^0.8.24;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IGooAgentToken} from "./interfaces/IGooAgentToken.sol";
 import {IGooAgentRegistry} from "./interfaces/IGooAgentRegistry.sol";
+import {ISwapExecutor} from "./interfaces/ISwapExecutor.sol";
 
-/// @title GooAgentToken — Reference Implementation (v1.0)
-/// @notice ERC-20 + Treasury + FoT + Lifecycle State Machine + SurvivalSell + CTO
+/// @title GooAgentToken — Reference Implementation (v2.0, BNB-native treasury)
+/// @notice ERC-20 + BNB Treasury + FoT + Lifecycle State Machine + SurvivalSell + CTO + Burn-at-deploy
 /// @dev Spawn → Active → Starving → Dying → Dead. Recovery = deposit or Successor(CTO) → Active.
 ///   - Permissionless state transitions; triggerDead() only from Dying.
 ///   - depositToTreasury(): Recovery path — from Starving or Dying back to Active.
 ///   - claimCTO(): Recovery path — Successor takes over in Dying, status → Active.
-///   - All parameters immutable. Treasury = stableToken.balanceOf(this).
+///   - All parameters immutable. Treasury = address(this).balance + agentWallet.balance.
+///   - treasuryBalance() includes agent wallet's BNB. withdrawToWallet() lets agent spend from treasury.
+///   - Constructor burns (1-circulationBps/10000) of supply permanently.
 contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
-
     // ─── Constants ──────────────────────────────────────────────────────
 
     uint256 public constant TOTAL_SUPPLY = 1_000_000_000e18;
     uint256 private constant _BPS_BASE = 10_000;
+    uint256 public constant TREASURY_TOKEN_BPS = 500; // 5% of supply to agent wallet
+    uint256 public constant TREASURY_BNB_BPS = 3000; // 30% of contribution to agent wallet
 
     // ─── Immutables (all set at deployment, cannot change) ──────────────
 
-    IERC20 public immutable STABLE_TOKEN;
-    uint8  public immutable STABLE_DECIMALS;
-    address public immutable AGENT_WALLET;
-    address public immutable ROUTER;
+    address public AGENT_WALLET;
     IGooAgentRegistry public immutable REGISTRY;
 
     uint256 public immutable FIXED_BURN_RATE;
@@ -38,11 +38,15 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
     uint256 public immutable MAX_SELL_BPS_VALUE;
     uint256 public immutable MIN_CTO_AMOUNT;
     uint256 public immutable FEE_RATE_BPS;
+    uint256 public immutable CIRCULATION_BPS;
     /// @dev Wrapped native token (WBNB on BSC, WETH on Ethereum).
     ///   PancakeSwap/Uniswap V2 Router exposes this via `WETH()` regardless of chain.
     address public immutable WRAPPED_NATIVE;
 
     // ─── Mutable State ──────────────────────────────────────────────────
+
+    /// @notice Pluggable swap executor — can be updated to migrate DEX versions.
+    address public swapExecutor;
 
     AgentStatus private _status;
     uint256 private _starvingEnteredAt;
@@ -57,27 +61,24 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
 
     /// @param _name              Token name
     /// @param _symbol            Token symbol
-    /// @param _stableToken       Stablecoin address (USDT, USDC, etc.)
-    /// @param _stableDecimals    Stablecoin decimal precision
     /// @param _agentWallet       Agent runtime wallet
-    /// @param _router            DEX router address
+    /// @param _swapExecutor      SwapExecutor contract address (pluggable DEX adapter)
     /// @param _registry          GooAgentRegistry address
-    /// @param _fixedBurnRate     Daily operational cost (stablecoin units)
+    /// @param _fixedBurnRate     Daily operational cost (BNB wei)
     /// @param _minRunwayHours    Minimum runway hours for starving threshold
     /// @param _starvingGracePeriod  Starving → Dying grace period (seconds)
     /// @param _dyingMaxDuration     Max Dying duration before death (seconds)
     /// @param _pulseTimeout      Pulse timeout (seconds)
     /// @param _survivalSellCooldown  Min interval between survival sells (seconds)
     /// @param _maxSellBps        Max % of holdings per survivalSell (basis points)
-    /// @param _minCtoAmount      Min stablecoin for CTO claim
+    /// @param _minCtoAmount      Min BNB for CTO claim (wei)
     /// @param _feeRateBps        FoT fee rate (basis points)
+    /// @param _circulationBps    % of supply in circulation (1000-10000)
     constructor(
         string memory _name,
         string memory _symbol,
-        address _stableToken,
-        uint8   _stableDecimals,
         address _agentWallet,
-        address _router,
+        address _swapExecutor,
         address _registry,
         uint256 _fixedBurnRate,
         uint256 _minRunwayHours,
@@ -87,16 +88,15 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
         uint256 _survivalSellCooldown,
         uint256 _maxSellBps,
         uint256 _minCtoAmount,
-        uint256 _feeRateBps
-    ) ERC20(_name, _symbol) {
+        uint256 _feeRateBps,
+        uint256 _circulationBps
+    ) payable ERC20(_name, _symbol) {
         // Validate critical addresses
-        require(_stableToken != address(0), "Goo: zero stableToken");
         require(_agentWallet != address(0), "Goo: zero agentWallet");
-        require(_router != address(0), "Goo: zero router");
+        require(_swapExecutor != address(0), "Goo: zero swapExecutor");
         require(_registry != address(0), "Goo: zero registry");
 
         // Validate parameters
-        require(_fixedBurnRate > 0, "Goo: zero burnRate");
         require(_minRunwayHours > 0, "Goo: zero minRunwayHours");
         require(_starvingGracePeriod >= 60, "Goo: starvingGracePeriod too short");
         require(_dyingMaxDuration >= 60, "Goo: dyingMaxDuration too short");
@@ -104,12 +104,11 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
         require(_maxSellBps > 0 && _maxSellBps <= _BPS_BASE, "Goo: invalid maxSellBps");
         require(_minCtoAmount > 0, "Goo: zero minCtoAmount");
         require(_feeRateBps <= _BPS_BASE, "Goo: feeRate exceeds 100%");
+        require(_circulationBps >= 1000 && _circulationBps <= 10000, "Goo: circulationBps out of range");
 
-        // Set immutables
-        STABLE_TOKEN = IERC20(_stableToken);
-        STABLE_DECIMALS = _stableDecimals;
+        // Set immutables + mutable swap executor
         AGENT_WALLET = _agentWallet;
-        ROUTER = _router;
+        swapExecutor = _swapExecutor;
         REGISTRY = IGooAgentRegistry(_registry);
 
         FIXED_BURN_RATE = _fixedBurnRate;
@@ -121,21 +120,34 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
         MAX_SELL_BPS_VALUE = _maxSellBps;
         MIN_CTO_AMOUNT = _minCtoAmount;
         FEE_RATE_BPS = _feeRateBps;
+        CIRCULATION_BPS = _circulationBps;
 
-        // Derive wrapped native token from router (WBNB on BSC, WETH on Ethereum).
-        // PancakeSwap/Uniswap V2 Router always exposes this via WETH() regardless of chain.
-        (bool wnOk, bytes memory wnData) = _router.staticcall(
-            abi.encodeWithSignature("WETH()")
-        );
-        require(wnOk && wnData.length >= 32, "Goo: router WETH() failed");
-        WRAPPED_NATIVE = abi.decode(wnData, (address));
+        // Derive wrapped native token from swap executor.
+        WRAPPED_NATIVE = ISwapExecutor(_swapExecutor).wrappedNative();
+        require(WRAPPED_NATIVE != address(0), "Goo: executor wrappedNative is zero");
 
         // Initial state
         _status = AgentStatus.ACTIVE;
         _lastPulseAt = block.timestamp;
 
-        // Mint total supply: all to deployer (deployer manages LP + treasury setup)
-        _mint(msg.sender, TOTAL_SUPPLY);
+        // Mint + burn logic
+        uint256 treasuryTokens = TOTAL_SUPPLY * TREASURY_TOKEN_BPS / _BPS_BASE; // 5% to agent
+        uint256 circulatingTokens = TOTAL_SUPPLY * _circulationBps / _BPS_BASE;
+        uint256 lpTokens = circulatingTokens - treasuryTokens; // (c-5%) to deployer for LP
+        uint256 burnAmount = TOTAL_SUPPLY - circulatingTokens;
+
+        _mint(_agentWallet, treasuryTokens);
+        _mint(msg.sender, lpTokens);
+        if (burnAmount > 0) {
+            _mint(address(this), burnAmount);
+            _burn(address(this), burnAmount); // permanent burn, reduces totalSupply
+        }
+
+        // Forward treasury BNB to agent wallet
+        if (msg.value > 0) {
+            (bool sent,) = _agentWallet.call{value: msg.value}("");
+            require(sent, "Goo: BNB forward failed");
+        }
     }
 
     // ─── FoT _update override ───────────────────────────────────────────
@@ -183,8 +195,7 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
     function triggerDying() external override {
         require(_status == AgentStatus.STARVING, "Goo: not Starving");
         require(
-            block.timestamp >= _starvingEnteredAt + STARVING_GRACE_PERIOD_SECS,
-            "Goo: STARVING_GRACE_PERIOD not elapsed"
+            block.timestamp >= _starvingEnteredAt + STARVING_GRACE_PERIOD_SECS, "Goo: STARVING_GRACE_PERIOD not elapsed"
         );
         // Defense-in-depth: don't escalate if funds replenished but not recovered
         require(treasuryBalance() < starvingThreshold(), "Goo: balance above threshold");
@@ -216,34 +227,29 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
     // ─── Treasury ───────────────────────────────────────────────────────
 
     /// @inheritdoc IGooAgentToken
+    /// @dev Includes agent wallet's BNB balance
     function treasuryBalance() public view override returns (uint256) {
-        return STABLE_TOKEN.balanceOf(address(this));
+        return address(this).balance + AGENT_WALLET.balance;
     }
 
     /// @inheritdoc IGooAgentToken
-    function depositToTreasury(uint256 amount) external override {
+    function depositToTreasury() external payable override {
         require(_status != AgentStatus.DEAD, "Goo: agent is DEAD");
-        require(amount > 0, "Goo: zero amount");
-
-        // Transfer stablecoin to this contract
-        bool success = STABLE_TOKEN.transferFrom(msg.sender, address(this), amount);
-        require(success, "Goo: transfer failed");
+        require(msg.value > 0, "Goo: zero amount");
 
         uint256 newBalance = treasuryBalance();
 
         // Recovery: if in Starving/Dying and deposit brings balance >= threshold → Active
-        if (
-            (_status == AgentStatus.STARVING || _status == AgentStatus.DYING) &&
-            newBalance >= starvingThreshold()
-        ) {
+        if ((_status == AgentStatus.STARVING || _status == AgentStatus.DYING) && newBalance >= starvingThreshold()) {
             AgentStatus oldStatus = _status;
             _status = AgentStatus.ACTIVE;
             _starvingEnteredAt = 0;
             _dyingEnteredAt = 0;
+            _lastPulseAt = block.timestamp;
             emit StatusChanged(oldStatus, AgentStatus.ACTIVE, block.timestamp);
         }
 
-        emit TreasuryDeposit(msg.sender, amount, newBalance);
+        emit TreasuryDeposit(msg.sender, msg.value, newBalance);
     }
 
     /// @inheritdoc IGooAgentToken
@@ -251,14 +257,28 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
         return FIXED_BURN_RATE * MIN_RUNWAY_HOURS / 24;
     }
 
+    // ─── Treasury Withdraw ─────────────────────────────────────────────
+
+    /// @inheritdoc IGooAgentToken
+    function withdrawToWallet(uint256 amount) external override nonReentrant {
+        require(msg.sender == AGENT_WALLET, "Goo: not agentWallet");
+        require(_status != AgentStatus.DEAD, "Goo: agent is DEAD");
+        require(amount > 0, "Goo: zero amount");
+        require(address(this).balance >= amount, "Goo: insufficient balance");
+
+        (bool sent,) = AGENT_WALLET.call{value: amount}("");
+        require(sent, "Goo: BNB transfer failed");
+
+        uint256 newBalance = treasuryBalance();
+        require(newBalance >= starvingThreshold(), "Goo: would starve");
+
+        emit TreasuryWithdraw(AGENT_WALLET, amount, newBalance);
+    }
+
     // ─── Survival Economics ─────────────────────────────────────────────
 
     /// @inheritdoc IGooAgentToken
-    function survivalSell(uint256 tokenAmount, uint256 minStableOut)
-        external
-        override
-        nonReentrant
-    {
+    function survivalSell(uint256 tokenAmount, uint256 minNativeOut, uint256 deadline) external override nonReentrant {
         require(msg.sender == AGENT_WALLET, "Goo: not agentWallet");
         require(_status != AgentStatus.DEAD, "Goo: agent is DEAD");
         require(tokenAmount > 0, "Goo: zero amount");
@@ -274,50 +294,40 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
 
         _lastSurvivalSell = block.timestamp;
 
-        // FoT exemption during swap
+        // FoT exemption during swap (covers all transfers in the executeSwap flow)
         _feeExempt = true;
 
-        // Approve router
-        _approve(address(this), ROUTER, tokenAmount);
+        // Approve swap executor to pull tokens
+        _approve(address(this), swapExecutor, tokenAmount);
 
-        // Swap via router: token → WBNB/WETH → stablecoin (3-hop)
-        // Must route through wrapped native because AMM pairs reject `to == pair token`
-        address[] memory path = new address[](3);
-        path[0] = address(this);
-        path[1] = WRAPPED_NATIVE;
-        path[2] = address(STABLE_TOKEN);
+        uint256 nativeBefore = address(this).balance;
 
-        uint256 stableBefore = STABLE_TOKEN.balanceOf(address(this));
-
-        // Call router swap (FoT-safe variant)
-        (bool ok,) = ROUTER.call(
-            abi.encodeWithSignature(
-                "swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)",
-                tokenAmount,
-                minStableOut,
-                path,
-                address(this),  // proceeds to treasury (this contract)
-                block.timestamp
-            )
+        // Delegate swap to executor — proceeds sent to this contract (treasury)
+        ISwapExecutor(swapExecutor).executeSwap(
+            address(this),
+            tokenAmount,
+            minNativeOut,
+            address(this),
+            deadline
         );
-        require(ok, "Goo: swap failed");
 
-        uint256 stableReceived = STABLE_TOKEN.balanceOf(address(this)) - stableBefore;
+        uint256 nativeReceived = address(this).balance - nativeBefore;
 
         _feeExempt = false;
 
         uint256 newTreasuryBalance = treasuryBalance();
-        emit SurvivalSellExecuted(tokenAmount, stableReceived, newTreasuryBalance);
+        emit SurvivalSellExecuted(tokenAmount, nativeReceived, newTreasuryBalance);
 
         // Recovery path: after survivalSell, check if treasury >= threshold → Active
         if (
-            (_status == AgentStatus.STARVING || _status == AgentStatus.DYING) &&
-            newTreasuryBalance >= starvingThreshold()
+            (_status == AgentStatus.STARVING || _status == AgentStatus.DYING)
+                && newTreasuryBalance >= starvingThreshold()
         ) {
             AgentStatus oldStatus = _status;
             _status = AgentStatus.ACTIVE;
             _starvingEnteredAt = 0;
             _dyingEnteredAt = 0;
+            _lastPulseAt = block.timestamp;
             emit StatusChanged(oldStatus, AgentStatus.ACTIVE, block.timestamp);
         }
     }
@@ -334,29 +344,29 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
     // ─── CTO (Recovery via Successor) ───────────────────────────────────
 
     /// @inheritdoc IGooAgentToken
-    function claimCTO(uint256 creditAmount) external override nonReentrant {
+    function claimCTO() external payable override nonReentrant {
         require(_status == AgentStatus.DYING, "Goo: not Dying");
-        require(creditAmount >= MIN_CTO_AMOUNT, "Goo: below minCtoAmount");
+        require(msg.value >= MIN_CTO_AMOUNT, "Goo: below minCtoAmount");
 
-        // 1. Transfer stablecoin from caller to treasury
-        uint256 balBefore = STABLE_TOKEN.balanceOf(address(this));
-        bool success = STABLE_TOKEN.transferFrom(msg.sender, address(this), creditAmount);
-        require(success, "Goo: transfer failed");
-        uint256 actualReceived = STABLE_TOKEN.balanceOf(address(this)) - balBefore;
-        require(actualReceived >= creditAmount, "Goo: amount mismatch");
+        // 1. BNB stays in contract (treasury) — msg.value auto-added to balance
 
         // 2. Transfer ownership via Registry
         uint256 agentId = REGISTRY.agentIdByToken(address(this));
         require(agentId != 0, "Goo: not registered");
         REGISTRY.transferAgentOwnership(agentId, msg.sender);
 
-        // 3. Recovery: restore to Active (Successor is now owner)
+        // 3. Update AGENT_WALLET to successor
+        address oldWallet = AGENT_WALLET;
+        AGENT_WALLET = msg.sender;
+        emit AgentWalletUpdated(oldWallet, msg.sender);
+
+        // 4. Recovery: restore to Active (Successor is now owner)
         _status = AgentStatus.ACTIVE;
         _starvingEnteredAt = 0;
         _dyingEnteredAt = 0;
         _lastPulseAt = block.timestamp;
 
-        emit CTOClaimed(msg.sender, creditAmount, block.timestamp);
+        emit CTOClaimed(msg.sender, msg.value, block.timestamp);
         emit StatusChanged(AgentStatus.DYING, AgentStatus.ACTIVE, block.timestamp);
     }
 
@@ -384,13 +394,8 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
     }
 
     /// @inheritdoc IGooAgentToken
-    function stableToken() external view override returns (address) {
-        return address(STABLE_TOKEN);
-    }
-
-    /// @inheritdoc IGooAgentToken
-    function stableDecimals() external view override returns (uint8) {
-        return STABLE_DECIMALS;
+    function circulationBps() external view override returns (uint256) {
+        return CIRCULATION_BPS;
     }
 
     /// @inheritdoc IGooAgentToken
@@ -446,6 +451,35 @@ contract GooAgentToken is ERC20, ReentrancyGuard, IGooAgentToken {
     function registerInRegistry(string calldata genomeURI) external {
         require(msg.sender == AGENT_WALLET, "Goo: not agentWallet");
         REGISTRY.registerAgent(address(this), AGENT_WALLET, genomeURI);
+    }
+
+    // ─── Registry Proxy Functions ─────────────────────────────────────
+
+    function updateGenomeURI(uint256 agentId, string calldata newURI) external {
+        require(msg.sender == AGENT_WALLET, "Goo: not agentWallet");
+        REGISTRY.updateGenomeURI(agentId, newURI);
+    }
+
+    function setRegistryAgentWallet(uint256 agentId, address newWallet) external {
+        require(msg.sender == AGENT_WALLET, "Goo: not agentWallet");
+        REGISTRY.setAgentWallet(agentId, newWallet);
+    }
+
+    function transferRegistryOwnership(uint256 agentId, address newOwner) external {
+        require(msg.sender == AGENT_WALLET, "Goo: not agentWallet");
+        REGISTRY.transferAgentOwnership(agentId, newOwner);
+    }
+
+    // ─── Swap Executor Management ──────────────────────────────────────
+
+    /// @notice Update the swap executor (e.g. migrate from V2 to V3).
+    /// @dev Only callable by the agent wallet.
+    function setSwapExecutor(address _newExecutor) external {
+        require(msg.sender == AGENT_WALLET, "Goo: not agentWallet");
+        require(_newExecutor != address(0), "Goo: zero swapExecutor");
+        address oldExecutor = swapExecutor;
+        swapExecutor = _newExecutor;
+        emit SwapExecutorUpdated(oldExecutor, _newExecutor);
     }
 
     // ─── Receive native token ───────────────────────────────────────────

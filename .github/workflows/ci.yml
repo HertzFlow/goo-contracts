@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  forge-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install Solidity dependencies
+        run: |
+          rm -rf lib
+          mkdir -p lib
+
+          git clone --depth 1 --branch v5.6.1 https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          git clone --depth 1 --branch v5.6.1 https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git lib/openzeppelin-contracts-upgradeable
+
+          # OpenZeppelin installs `forge-std` and other tooling as nested submodules.
+          git -C lib/openzeppelin-contracts submodule update --init --recursive --jobs 2
+          git -C lib/openzeppelin-contracts-upgradeable submodule update --init --recursive --jobs 2 || true
+
+      - name: Build
+        run: forge build
+
+      - name: Test
+        run: forge test -v

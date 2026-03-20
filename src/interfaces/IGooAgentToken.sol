@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title IGooAgentToken — Goo Agent Token Standard Interface (v1.0)
-/// @notice ERC-20 token with integrated Treasury, Fee-on-Transfer,
-///         lifecycle state machine, survival economics, and CTO.
+/// @title IGooAgentToken — Goo Agent Token Standard Interface (v2.0)
+/// @notice ERC-20 token with integrated BNB Treasury, Fee-on-Transfer,
+///         lifecycle state machine, survival economics, burn-at-deploy, and CTO.
 ///
 /// @dev States: Spawn (deploy) → Active → Starving → Dying → Dead.
 ///   Recovery is not a state: return to Active via deposit (e.g. Deployer) or Successor (CTO).
 ///   Permissionless state transitions; survivalSell/emitPulse onlyAgentWallet.
 ///   Token address = Agent identity (Registry). DEAD is irreversible.
+///   Treasury is BNB-native — no stablecoin dependency.
 interface IGooAgentToken {
-
     // ─── Enums ────────────────────────────────────────────────────────────
 
     /// @notice Agent lifecycle states
     enum AgentStatus {
-        ACTIVE,   // Normal operation, treasury funded
+        ACTIVE, // Normal operation, treasury funded
         STARVING, // Treasury below threshold
-        DYING,    // Grace period expired; survival + CTO window open
-        DEAD      // Terminal, irreversible
+        DYING, // Grace period expired; survival + CTO window open
+        DEAD // Terminal, irreversible
     }
 
     // ─── Lifecycle State Machine ──────────────────────────────────────────
@@ -63,34 +63,41 @@ interface IGooAgentToken {
 
     // ─── Treasury ─────────────────────────────────────────────────────────
 
-    /// @notice Returns the current stablecoin balance in the treasury.
-    /// @return Treasury balance (scaled to stableDecimals)
+    /// @notice Returns the current BNB balance in the treasury.
+    /// @return Treasury balance in wei
     function treasuryBalance() external view returns (uint256);
 
-    /// @notice Deposit stablecoin into the agent's treasury.
+    /// @notice Deposit BNB into the agent's treasury.
     /// @dev Permissionless — anyone can call (donate to keep agent alive).
     ///      If agent is in STARVING/DYING and deposit brings balance ≥ starvingThreshold(),
     ///      Recovery: status reverts to ACTIVE (anyone can fund, e.g. Deployer).
-    /// @param amount Stablecoin amount to deposit (scaled to stableDecimals)
-    function depositToTreasury(uint256 amount) external;
+    function depositToTreasury() external payable;
 
     /// @notice Returns the computed Starving threshold (treasury below this → Starving).
     /// @dev starvingThreshold = fixedBurnRate * minRunwayHours / 24
     ///      Used by triggerStarving() and by Recovery (deposit restores to Active).
-    /// @return The threshold in stablecoin units
+    /// @return The threshold in wei
     function starvingThreshold() external view returns (uint256);
+
+    // ─── Treasury Withdraw ─────────────────────────────────────────────────
+
+    /// @notice Withdraw BNB from treasury to agent wallet.
+    /// @dev Restricted: onlyAgentWallet. Reverts if withdrawal would drop
+    ///      treasuryBalance below starvingThreshold(). Sends BNB to agent wallet.
+    /// @param amount BNB amount to withdraw in wei
+    function withdrawToWallet(uint256 amount) external;
 
     // ─── Survival Economics ───────────────────────────────────────────────
 
-    /// @notice Agent sells its own tokens for stablecoin to fund treasury.
+    /// @notice Agent sells its own tokens for BNB to fund treasury.
     /// @dev Restricted: onlyAgentWallet.
     ///   - Subject to SURVIVAL_SELL_COOLDOWN between calls
     ///   - Subject to maxSellBps per-call cap (enforced on-chain)
     ///   - Sells through configured DEX router
     ///   - Proceeds deposited directly to treasury
     /// @param tokenAmount Amount of agent tokens to sell (capped by maxSellBps)
-    /// @param minStableOut Minimum stablecoin output (slippage protection)
-    function survivalSell(uint256 tokenAmount, uint256 minStableOut) external;
+    /// @param minNativeOut Minimum BNB output (slippage protection)
+    function survivalSell(uint256 tokenAmount, uint256 minNativeOut, uint256 deadline) external;
 
     /// @notice Emit Pulse (proof-of-life signal) from the agent.
     /// @dev Restricted: onlyAgentWallet.
@@ -112,22 +119,19 @@ interface IGooAgentToken {
 
     // ─── CTO (Recovery via Successor) ──────────────────────────────────────
 
-    /// @notice CTO: inject capital to take over agent ownership during DYING (Recovery via Successor).
+    /// @notice CTO: inject BNB capital to take over agent ownership during DYING (Recovery via Successor).
     /// @dev Permissionless — anyone can call. Succeeds only if:
     ///   - Current status is DYING
-    ///   - creditAmount >= minCtoAmount
+    ///   - msg.value >= minCtoAmount
     ///   Atomic execution:
-    ///   1. stablecoin.transferFrom(msg.sender, treasury/agentWallet, creditAmount)
+    ///   1. BNB stays in contract (treasury)
     ///   2. Ownership transferred to msg.sender (via Registry)
     ///   3. Status restored to ACTIVE
-    ///   The specific incentive mechanism (fee escrow, auction, etc.) is
-    ///   implementation-defined. The protocol only requires the above 3 steps.
-    /// @param creditAmount Stablecoin amount to inject (>= minCtoAmount)
-    function claimCTO(uint256 creditAmount) external;
+    function claimCTO() external payable;
 
-    /// @notice Minimum stablecoin injection required for CTO claim.
+    /// @notice Minimum BNB injection required for CTO claim.
     /// @dev Immutable. Set at deployment.
-    /// @return Minimum amount in stablecoin units
+    /// @return Minimum amount in wei
     function minCtoAmount() external view returns (uint256);
 
     // ─── Configuration (Read-only) ────────────────────────────────────────
@@ -136,15 +140,10 @@ interface IGooAgentToken {
     /// @return The wallet address authorized for economic actions
     function agentWallet() external view returns (address);
 
-    /// @notice Returns the stablecoin token address used by treasury.
-    /// @dev Protocol is stablecoin-agnostic (USDT, USDC, DAI, etc.).
-    /// @return The stablecoin contract address
-    function stableToken() external view returns (address);
-
-    /// @notice Returns the decimal precision of the stablecoin.
-    /// @dev Used for threshold and burn rate normalization across chains.
-    /// @return Number of decimals (e.g., 18 for most, 6 for USDC on some chains)
-    function stableDecimals() external view returns (uint8);
+    /// @notice Returns the circulation basis points (% of supply in circulation).
+    /// @dev Immutable. Set at deployment. 1000-10000 (10%-100%).
+    /// @return Circulation in basis points
+    function circulationBps() external view returns (uint256);
 
     /// @notice Returns the timestamp of the last Pulse (proof-of-life).
     /// @return Unix timestamp
@@ -160,8 +159,8 @@ interface IGooAgentToken {
 
     // ─── Protocol Parameters (all immutable, set at deployment) ──────────
 
-    /// @notice Daily operational cost in stablecoin.
-    /// @dev Immutable. Reference default: 1.5 * 10^stableDecimals = $1.50/day
+    /// @notice Daily operational cost in BNB (wei). 0 is valid (disables on-chain starving).
+    /// @dev Immutable. When 0, starvingThreshold() returns 0 — treasury can never be below threshold.
     function fixedBurnRate() external view returns (uint256);
 
     /// @notice Minimum runway hours used in starving threshold calculation.
@@ -186,31 +185,32 @@ interface IGooAgentToken {
     /// @dev Immutable. Reference default: 3600 (1 hour).
     function SURVIVAL_SELL_COOLDOWN() external view returns (uint256);
 
+    // ─── Swap Executor ──────────────────────────────────────────────────
+
+    /// @notice Returns the current swap executor address.
+    /// @dev Mutable — can be updated by agent wallet via setSwapExecutor().
+    function swapExecutor() external view returns (address);
+
+    /// @notice Update the swap executor (e.g. migrate from V2 to V3).
+    /// @dev Restricted: onlyAgentWallet.
+    /// @param _newExecutor Address of the new ISwapExecutor contract
+    function setSwapExecutor(address _newExecutor) external;
+
     // ─── Events ───────────────────────────────────────────────────────────
 
-    event StatusChanged(
-        AgentStatus indexed oldStatus,
-        AgentStatus indexed newStatus,
-        uint256 timestamp
-    );
+    event SwapExecutorUpdated(address indexed oldExecutor, address indexed newExecutor);
 
-    event TreasuryDeposit(
-        address indexed depositor,
-        uint256 amount,
-        uint256 newBalance
-    );
+    event StatusChanged(AgentStatus indexed oldStatus, AgentStatus indexed newStatus, uint256 timestamp);
 
-    event SurvivalSellExecuted(
-        uint256 tokensSold,
-        uint256 stableReceived,
-        uint256 newTreasuryBalance
-    );
+    event TreasuryDeposit(address indexed depositor, uint256 amount, uint256 newBalance);
+
+    event SurvivalSellExecuted(uint256 tokensSold, uint256 nativeReceived, uint256 newTreasuryBalance);
 
     event PulseEmitted(uint256 timestamp);
 
-    event CTOClaimed(
-        address indexed newOwner,
-        uint256 creditAmount,
-        uint256 timestamp
-    );
+    event CTOClaimed(address indexed newOwner, uint256 creditAmount, uint256 timestamp);
+
+    event TreasuryWithdraw(address indexed to, uint256 amount, uint256 newBalance);
+
+    event AgentWalletUpdated(address indexed oldWallet, address indexed newWallet);
 }

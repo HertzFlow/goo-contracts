@@ -1,1 +1,14 @@
 node_modules/
+cache/
+out/
+broadcast/
+.env*
+.envrc
+*.pem
+*.key
+*.crt
+*.p12
+secrets.json
+*.log
+.DS_Store
+/lib

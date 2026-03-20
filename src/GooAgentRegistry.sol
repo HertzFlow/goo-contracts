@@ -9,7 +9,6 @@ import {IGooAgentRegistry, IERC8004} from "./interfaces/IGooAgentRegistry.sol";
 /// @notice ERC-721 + Minimal ERC-8004 Adapter for agent identity.
 ///         Non-upgradeable. agentId auto-increments from 1.
 contract GooAgentRegistry is ERC721, IGooAgentRegistry {
-
     // ─── State ──────────────────────────────────────────────────────────
 
     uint256 private _nextAgentId = 1;
@@ -32,11 +31,11 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
     // ─── Registration ───────────────────────────────────────────────────
 
     /// @inheritdoc IGooAgentRegistry
-    function registerAgent(
-        address tokenContract,
-        address agentWallet_,
-        string calldata genomeURI
-    ) external override returns (uint256 agentId) {
+    function registerAgent(address tokenContract, address agentWallet_, string calldata genomeURI)
+        external
+        override
+        returns (uint256 agentId)
+    {
         // Validate inputs
         require(tokenContract != address(0), "Registry: zero token");
         require(tokenContract.code.length > 0, "Registry: not a contract");
@@ -83,9 +82,7 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
     ///      Must be external for try/catch to work on this contract.
     function _tryGetOwner(address target) external view returns (address) {
         // solhint-disable-next-line avoid-low-level-calls
-        (bool success, bytes memory data) = target.staticcall(
-            abi.encodeWithSignature("owner()")
-        );
+        (bool success, bytes memory data) = target.staticcall(abi.encodeWithSignature("owner()"));
         require(success && data.length >= 32, "owner() failed");
         return abi.decode(data, (address));
     }
@@ -166,29 +163,28 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
         require(newOwner != address(0), "Registry: zero owner");
 
         // Callable by: current owner OR the agent's token contract (for CTO)
-        require(
-            msg.sender == record.owner || msg.sender == record.tokenContract,
-            "Registry: unauthorized"
-        );
+        require(msg.sender == record.owner || msg.sender == record.tokenContract, "Registry: unauthorized");
 
-        address oldOwner = record.owner;
-        record.owner = newOwner;
+        // Transfer ERC-721 NFT — _update() syncs record.owner and emits AgentOwnershipTransferred
+        _transfer(record.owner, newOwner, agentId);
+    }
 
-        // Transfer ERC-721 NFT
-        _transfer(oldOwner, newOwner, agentId);
+    // ─── ERC-721 _update override (M03: sync AgentRecord.owner) ────────
 
-        emit AgentOwnershipTransferred(agentId, oldOwner, newOwner);
+    /// @dev Sync AgentRecord.owner on any ERC-721 transfer (including direct transferFrom/safeTransferFrom).
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+        address from = super._update(to, tokenId, auth);
+        if (from != address(0) && to != address(0)) {
+            _agents[tokenId].owner = to;
+            emit AgentOwnershipTransferred(tokenId, from, to);
+        }
+        return from;
     }
 
     // ─── ERC-165 ────────────────────────────────────────────────────────
 
     /// @inheritdoc IERC165
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(ERC721, IGooAgentRegistry)
-        returns (bool)
-    {
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, IGooAgentRegistry) returns (bool) {
         return interfaceId == _IERC8004_ID || super.supportsInterface(interfaceId);
     }
 
@@ -196,9 +192,7 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
 
     /// @dev Check if agent token is DEAD. If getAgentStatus() returns DEAD (3), revert.
     function _requireNotDead(address tokenContract) internal view {
-        (bool success, bytes memory data) = tokenContract.staticcall(
-            abi.encodeWithSignature("getAgentStatus()")
-        );
+        (bool success, bytes memory data) = tokenContract.staticcall(abi.encodeWithSignature("getAgentStatus()"));
         if (success && data.length >= 32) {
             uint8 status = abi.decode(data, (uint8));
             require(status != 3, "Registry: agent is DEAD");

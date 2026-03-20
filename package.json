@@ -1,26 +1,33 @@
 {
-  "name": "goo-contracts",
+  "name": "@hertzflow/goo-contracts",
   "version": "1.0.0",
-  "description": "Goo Agent on-chain contracts — ERC-20 token with Treasury, lifecycle state machine, SurvivalSell, CTO; ERC-721 Registry with ERC-8004 adapter",
+  "description": "Goo protocol on-chain contracts: IGooAgentToken, IGooAgentRegistry, reference implementations and mocks",
   "license": "MIT",
-  "files": [
-    "contracts"
-  ],
+  "homepage": "https://goo.hertzflow.xyz",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/goo-contracts.git"
+    "url": "https://github.com/HertzFlow/goo-contracts"
   },
+  "bugs": {
+    "url": "https://github.com/HertzFlow/goo-contracts/issues"
+  },
+  "files": [
+    "src"
+  ],
   "keywords": [
     "goo",
-    "agent",
-    "erc20",
-    "erc721",
-    "erc-8004",
+    "ethereum",
     "solidity",
-    "lifecycle",
-    "treasury",
-    "cto"
+    "erc20",
+    "agent",
+    "lifecycle"
   ],
-  "peerDependencies": {},
-  "peerDependenciesMeta": {}
+  "peerDependencies": {
+    "@openzeppelin/contracts": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@openzeppelin/contracts": {
+      "optional": true
+    }
+  }
 }
