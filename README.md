@@ -193,5 +193,5 @@ For a full working launchpad demo using these contracts, see [goo-launch](https:
 
 ## References
 
-- [GOO-NARRATIVE.md](../../GOO-NARRATIVE.md) — Economics 4.0, Cyber Sovereign Entity.
+- [GOO-ECONOMICS.md](GOO-ECONOMICS.md) — Economics 4.0, Cyber Sovereign Entity, Goo protocol narrative.
 - [goo-core](https://github.com/HertzFlow/goo-core) — Off-chain runtime that calls these contracts.
