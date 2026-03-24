@@ -48,7 +48,7 @@ contract IntegrationTest is TestSetup {
         vm.prank(agentWallet);
         token.registerInRegistry("ipfs://genome");
         uint256 agentId = registry.agentIdByToken(address(token));
-        assertEq(registry.agentOwnerOf(agentId), address(token));
+        assertEq(registry.agentOwnerOf(agentId), deployer);
 
         vm.deal(agentWallet, 0);
         vm.deal(address(token), 0);
@@ -62,8 +62,8 @@ contract IntegrationTest is TestSetup {
         assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
         assertEq(registry.agentOwnerOf(agentId), user1);
         assertEq(registry.ownerOf(agentId), user1);
-        // [H01] AGENT_WALLET updated to successor
-        assertEq(token.agentWallet(), user1);
+        // AGENT_WALLET stays unchanged; the new owner updates it explicitly if needed.
+        assertEq(token.agentWallet(), agentWallet);
         // BNB stays in contract treasury
         assertEq(address(token).balance, MIN_CTO_AMOUNT);
     }
@@ -82,8 +82,8 @@ contract IntegrationTest is TestSetup {
         vm.prank(user1);
         token.claimCTO{value: MIN_CTO_AMOUNT}();
 
-        // user1 is now AGENT_WALLET, can call emitPulse
-        vm.prank(user1);
+        // AGENT_WALLET stays unchanged across CTO.
+        vm.prank(agentWallet);
         token.emitPulse();
         assertEq(token.lastPulseAt(), block.timestamp);
     }
@@ -93,7 +93,7 @@ contract IntegrationTest is TestSetup {
         token.registerInRegistry("ipfs://g");
         token.transfer(address(token), 200e18);
         vm.prank(agentWallet);
-        token.survivalSell(100e18, 0, block.timestamp + 300);
+        token.survivalSell(50e18, 0, block.timestamp + 300);
         assertGt(token.treasuryBalance(), 0);
         if (token.treasuryBalance() >= token.starvingThreshold()) {
             assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));

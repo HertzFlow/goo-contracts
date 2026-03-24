@@ -19,7 +19,8 @@ contract GooAgentRegistryTest is TestSetup {
         assertEq(registry.totalAgents(), 1);
         assertEq(registry.tokenOf(agentId), address(token));
         assertEq(registry.agentWalletOf(agentId), agentWallet);
-        assertEq(registry.agentOwnerOf(agentId), address(token));
+        assertEq(registry.agentOwnerOf(agentId), deployer);
+        assertEq(registry.ownerOf(agentId), deployer);
         assertEq(registry.genomeURIOf(agentId), "ipfs://genome1");
     }
 
@@ -90,7 +91,7 @@ contract GooAgentRegistryTest is TestSetup {
         vm.prank(agentWallet);
         token.registerInRegistry("ipfs://x");
         vm.prank(user1);
-        vm.expectRevert("Registry: not owner");
+        vm.expectRevert("Registry: unauthorized");
         registry.updateGenomeURI(1, "ipfs://y");
     }
 
@@ -124,7 +125,7 @@ contract GooAgentRegistryTest is TestSetup {
         vm.prank(agentWallet);
         token.registerInRegistry("ipfs://x");
         vm.prank(user1);
-        vm.expectRevert("Registry: not owner");
+        vm.expectRevert("Registry: unauthorized");
         registry.setAgentWallet(1, user1);
     }
 
@@ -173,34 +174,25 @@ contract GooAgentRegistryTest is TestSetup {
 
     // ─── [M03] Direct NFT transfer syncs AgentRecord.owner ──────────────
 
-    function test_DirectNFTTransfer_SyncsRecordOwner() public {
+    function test_RevertWhen_DirectNFTTransfer() public {
         vm.prank(agentWallet);
         token.registerInRegistry("ipfs://x");
         uint256 agentId = 1;
 
-        // Owner is address(token) after registration
-        assertEq(registry.agentOwnerOf(agentId), address(token));
-        assertEq(registry.ownerOf(agentId), address(token));
+        assertEq(registry.agentOwnerOf(agentId), deployer);
+        assertEq(registry.ownerOf(agentId), deployer);
 
-        // Direct ERC-721 transfer (not via transferAgentOwnership)
-        vm.prank(address(token));
-        registry.transferFrom(address(token), user1, agentId);
-
-        // Both ERC-721 ownerOf and AgentRecord.owner should be synced
-        assertEq(registry.ownerOf(agentId), user1);
-        assertEq(registry.agentOwnerOf(agentId), user1);
+        vm.expectRevert("Registry: non-transferable");
+        registry.transferFrom(deployer, user1, agentId);
     }
 
-    function test_DirectSafeTransfer_SyncsRecordOwner() public {
+    function test_RevertWhen_DirectSafeTransfer() public {
         vm.prank(agentWallet);
         token.registerInRegistry("ipfs://x");
         uint256 agentId = 1;
 
-        vm.prank(address(token));
-        registry.safeTransferFrom(address(token), user1, agentId);
-
-        assertEq(registry.ownerOf(agentId), user1);
-        assertEq(registry.agentOwnerOf(agentId), user1);
+        vm.expectRevert("Registry: non-transferable");
+        registry.safeTransferFrom(deployer, user1, agentId);
     }
 
     // ─── Events: updateGenomeURI / setAgentWallet / transferAgentOwnership ──
@@ -272,7 +264,7 @@ contract GooAgentRegistryTest is TestSetup {
         uint256 agentId = registry.agentIdByToken(address(token));
 
         address oldOwner = registry.agentOwnerOf(agentId);
-        assertEq(oldOwner, address(token));
+        assertEq(oldOwner, deployer);
 
         vm.recordLogs();
         vm.prank(address(token));

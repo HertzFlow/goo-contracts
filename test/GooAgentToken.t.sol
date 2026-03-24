@@ -25,7 +25,7 @@ contract GooAgentTokenTest is TestSetup {
     }
 
     function test_StarvingThreshold_Formula() public view {
-        assertEq(token.starvingThreshold(), FIXED_BURN_RATE * MIN_RUNWAY_HOURS / 24);
+        assertEq(token.starvingThreshold(), 0.015 ether);
     }
 
     function test_RevertWhen_ZeroAgentWallet() public {
@@ -35,7 +35,6 @@ contract GooAgentTokenTest is TestSetup {
             address(0),
             address(swapExecutor),
             address(registry),
-            FIXED_BURN_RATE, MIN_RUNWAY_HOURS,
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
             MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
@@ -50,7 +49,6 @@ contract GooAgentTokenTest is TestSetup {
             agentWallet,
             address(0),
             address(registry),
-            FIXED_BURN_RATE, MIN_RUNWAY_HOURS,
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
             MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
@@ -65,7 +63,6 @@ contract GooAgentTokenTest is TestSetup {
             agentWallet,
             address(swapExecutor),
             address(registry),
-            FIXED_BURN_RATE, MIN_RUNWAY_HOURS,
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
             0, MIN_CTO_AMOUNT, FEE_RATE_BPS,
@@ -184,6 +181,144 @@ contract GooAgentTokenTest is TestSetup {
         token.triggerDying();
         vm.expectRevert("Goo: not eligible for DEAD");
         token.triggerDead();
+    }
+
+    // ─── Lifecycle: triggerRecovery ───────────────────────────────────────
+
+    function test_TriggerRecovery_FromStarving() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.STARVING));
+
+        // Fund treasury above threshold
+        vm.deal(address(token), token.starvingThreshold());
+        token.triggerRecovery();
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
+        assertEq(token.starvingEnteredAt(), 0);
+        assertEq(token.dyingEnteredAt(), 0);
+        assertEq(token.lastPulseAt(), block.timestamp);
+    }
+
+    function test_TriggerRecovery_FromDying() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
+        token.triggerDying();
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.DYING));
+
+        // Fund treasury above threshold
+        vm.deal(address(token), token.starvingThreshold());
+        token.triggerRecovery();
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
+        assertEq(token.starvingEnteredAt(), 0);
+        assertEq(token.dyingEnteredAt(), 0);
+    }
+
+    function test_RevertWhen_TriggerRecovery_NotStarvingOrDying() public {
+        vm.expectRevert("Goo: not Starving or Dying");
+        token.triggerRecovery();
+    }
+
+    function test_RevertWhen_TriggerRecovery_BalanceBelowThreshold() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+        vm.expectRevert("Goo: balance below threshold");
+        token.triggerRecovery();
+    }
+
+    function test_TriggerRecovery_EmitsStatusChanged() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+
+        vm.deal(address(token), token.starvingThreshold());
+        uint256 ts = block.timestamp;
+
+        vm.expectEmit(true, true, false, true, address(token));
+        emit IGooAgentToken.StatusChanged(
+            IGooAgentToken.AgentStatus.STARVING,
+            IGooAgentToken.AgentStatus.ACTIVE,
+            ts
+        );
+        token.triggerRecovery();
+    }
+
+    // ─── Lifecycle: triggerLifecycle (unified) ──────────────────────────
+
+    function test_TriggerLifecycle_Recovery() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+        // Fund above threshold
+        vm.deal(address(token), token.starvingThreshold());
+        uint8 action = token.triggerLifecycle();
+        assertEq(action, 1); // recovery
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
+    }
+
+    function test_TriggerLifecycle_Starving() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        uint8 action = token.triggerLifecycle();
+        assertEq(action, 2); // starving
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.STARVING));
+    }
+
+    function test_TriggerLifecycle_Dying() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
+        uint8 action = token.triggerLifecycle();
+        assertEq(action, 3); // dying
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.DYING));
+    }
+
+    function test_TriggerLifecycle_Dead() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
+        token.triggerDying();
+        vm.warp(block.timestamp + PULSE_TIMEOUT + 1);
+        uint8 action = token.triggerLifecycle();
+        assertEq(action, 4); // dead
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.DEAD));
+    }
+
+    function test_TriggerLifecycle_NoOp_WhenHealthy() public {
+        // Treasury funded from constructor, ACTIVE and healthy
+        uint8 action = token.triggerLifecycle();
+        assertEq(action, 0); // no-op
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
+    }
+
+    function test_TriggerLifecycle_NoOp_WhenDead() public {
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
+        token.triggerDying();
+        vm.warp(block.timestamp + PULSE_TIMEOUT + 1);
+        token.triggerDead();
+        uint8 action = token.triggerLifecycle();
+        assertEq(action, 0); // no-op, already dead
+    }
+
+    function test_TriggerLifecycle_RecoveryPrioritizedOverDying() public {
+        // STARVING + grace period elapsed BUT balance is healthy → recovery wins
+        vm.deal(agentWallet, 0);
+        vm.deal(address(token), 0);
+        token.triggerStarving();
+        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
+        // Fund above threshold
+        vm.deal(address(token), token.starvingThreshold());
+        uint8 action = token.triggerLifecycle();
+        assertEq(action, 1); // recovery, not dying
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
     }
 
     // ─── Treasury ────────────────────────────────────────────────────────
@@ -345,7 +480,7 @@ contract GooAgentTokenTest is TestSetup {
     function test_SurvivalSell_AgentWallet_Success() public {
         // Transfer tokens to token contract for selling
         uint256 toSell = 50e18;
-        token.transfer(address(token), 100e18);
+        token.transfer(address(token), 200e18);
         uint256 bnbBefore = address(token).balance;
         vm.prank(agentWallet);
         token.survivalSell(toSell, 0, block.timestamp + 300);
@@ -379,10 +514,10 @@ contract GooAgentTokenTest is TestSetup {
     function test_SurvivalSell_AfterCooldown() public {
         token.transfer(address(token), 200e18);
         vm.prank(agentWallet);
-        token.survivalSell(100e18, 0, block.timestamp + 300);
+        token.survivalSell(99e18, 0, block.timestamp + 300);
         vm.warp(block.timestamp + SURVIVAL_SELL_COOLDOWN + 1);
         vm.prank(agentWallet);
-        token.survivalSell(50e18, 0, block.timestamp + 300);
+        token.survivalSell(49e18, 0, block.timestamp + 300);
     }
 
     // ─── CTO (Recovery: Successor) ───────────────────────────────────────
@@ -394,8 +529,9 @@ contract GooAgentTokenTest is TestSetup {
         vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
         token.triggerDying();
         vm.prank(user1);
-        vm.expectRevert("Goo: not registered");
         token.claimCTO{value: MIN_CTO_AMOUNT}();
+        assertEq(token.owner(), user1);
+        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
     }
 
     function test_RevertWhen_ClaimCTO_NotDying() public {
@@ -415,9 +551,9 @@ contract GooAgentTokenTest is TestSetup {
         token.claimCTO{value: MIN_CTO_AMOUNT - 1}();
     }
 
-    // ─── [H01] claimCTO updates AGENT_WALLET ────────────────────────────
+    // ─── CTO keeps AGENT_WALLET unchanged ───────────────────────────────
 
-    function test_ClaimCTO_UpdatesAgentWallet() public {
+    function test_ClaimCTO_KeepsAgentWallet() public {
         vm.prank(agentWallet);
         token.registerInRegistry("ipfs://genome");
 
@@ -433,8 +569,9 @@ contract GooAgentTokenTest is TestSetup {
         vm.prank(user1);
         token.claimCTO{value: MIN_CTO_AMOUNT}();
 
-        assertEq(token.agentWallet(), user1);
-        assertEq(token.AGENT_WALLET(), user1);
+        assertEq(token.owner(), user1);
+        assertEq(token.agentWallet(), agentWallet);
+        assertEq(token.AGENT_WALLET(), agentWallet);
     }
 
     // ─── [M04] Recovery resets _lastPulseAt ──────────────────────────────
@@ -488,7 +625,7 @@ contract GooAgentTokenTest is TestSetup {
         token.registerInRegistry("ipfs://old");
         uint256 agentId = registry.agentIdByToken(address(token));
 
-        vm.prank(agentWallet);
+        vm.prank(deployer);
         token.updateGenomeURI(agentId, "ipfs://new");
         assertEq(registry.genomeURIOf(agentId), "ipfs://new");
     }
@@ -499,7 +636,7 @@ contract GooAgentTokenTest is TestSetup {
         uint256 agentId = registry.agentIdByToken(address(token));
 
         vm.prank(user1);
-        vm.expectRevert("Goo: not agentWallet");
+        vm.expectRevert("Goo: not owner");
         token.updateGenomeURI(agentId, "ipfs://new");
     }
 
@@ -509,7 +646,8 @@ contract GooAgentTokenTest is TestSetup {
         uint256 agentId = registry.agentIdByToken(address(token));
 
         address newWallet = makeAddr("newWallet");
-        vm.prank(agentWallet);
+        token.setAgentWallet(newWallet);
+        vm.prank(deployer);
         token.setRegistryAgentWallet(agentId, newWallet);
         assertEq(registry.agentWalletOf(agentId), newWallet);
     }
@@ -520,7 +658,7 @@ contract GooAgentTokenTest is TestSetup {
         uint256 agentId = registry.agentIdByToken(address(token));
 
         vm.prank(user1);
-        vm.expectRevert("Goo: not agentWallet");
+        vm.expectRevert("Goo: not owner");
         token.setRegistryAgentWallet(agentId, user1);
     }
 
@@ -529,11 +667,10 @@ contract GooAgentTokenTest is TestSetup {
         token.registerInRegistry("ipfs://g");
         uint256 agentId = registry.agentIdByToken(address(token));
 
-        // Owner is token contract after registerInRegistry
-        assertEq(registry.agentOwnerOf(agentId), address(token));
+        assertEq(registry.agentOwnerOf(agentId), deployer);
 
-        // Transfer ownership to creator wallet
-        vm.prank(agentWallet);
+        token.transferOwnership(user1);
+        vm.prank(user1);
         token.transferRegistryOwnership(agentId, user1);
         assertEq(registry.agentOwnerOf(agentId), user1);
     }
@@ -544,7 +681,7 @@ contract GooAgentTokenTest is TestSetup {
         uint256 agentId = registry.agentIdByToken(address(token));
 
         vm.prank(user1);
-        vm.expectRevert("Goo: not agentWallet");
+        vm.expectRevert("Goo: not owner");
         token.transferRegistryOwnership(agentId, user1);
     }
 
@@ -554,9 +691,11 @@ contract GooAgentTokenTest is TestSetup {
         uint256 amount = 100e18;
         uint256 expectedFee = amount * FEE_RATE_BPS / 10000;
         uint256 expectedNet = amount - expectedFee;
+        uint256 deployerBefore = token.balanceOf(deployer);
         token.transfer(user1, amount);
         assertEq(token.balanceOf(user1), expectedNet);
-        assertEq(token.balanceOf(address(token)), expectedFee);
+        assertEq(token.balanceOf(deployer), deployerBefore - expectedNet);
+        assertEq(token.balanceOf(address(token)), 0);
     }
 
     function test_FeeRate_ZeroWhenDead() public {
@@ -577,8 +716,9 @@ contract GooAgentTokenTest is TestSetup {
     }
 
     function test_View_ProtocolParams() public view {
-        assertEq(token.fixedBurnRate(), FIXED_BURN_RATE);
-        assertEq(token.minRunwayHours(), MIN_RUNWAY_HOURS);
+        assertEq(token.starvingThreshold(), 0.015 ether);
+        assertEq(token.dyingThreshold(), 0); // deprecated, returns 0
+        assertEq(token.DYING_MAX_DURATION(), DYING_MAX_DURATION);
         assertEq(token.STARVING_GRACE_PERIOD(), STARVING_GRACE_PERIOD);
         assertEq(token.DYING_MAX_DURATION(), DYING_MAX_DURATION);
         assertEq(token.PULSE_TIMEOUT(), PULSE_TIMEOUT);
@@ -597,7 +737,6 @@ contract GooAgentTokenTest is TestSetup {
         new GooAgentToken{value: 0.5 ether}(
             "G", "G",
             agentWallet, address(swapExecutor), address(registry),
-            FIXED_BURN_RATE, MIN_RUNWAY_HOURS,
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
             MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
@@ -610,7 +749,6 @@ contract GooAgentTokenTest is TestSetup {
         GooAgentToken t = new GooAgentToken(
             "G", "G",
             agentWallet, address(swapExecutor), address(registry),
-            FIXED_BURN_RATE, MIN_RUNWAY_HOURS,
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
             MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
@@ -624,7 +762,6 @@ contract GooAgentTokenTest is TestSetup {
         GooAgentToken t = new GooAgentToken(
             "G", "G",
             agentWallet, address(swapExecutor), address(registry),
-            FIXED_BURN_RATE, MIN_RUNWAY_HOURS,
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
             MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
@@ -689,7 +826,7 @@ contract GooAgentTokenTest is TestSetup {
     // ─── Events: SurvivalSellExecuted ─────────────────────────────────────
 
     function test_SurvivalSell_EmitsSurvivalSellExecuted() public {
-        uint256 holdings = 100e18;
+        uint256 holdings = 200e18;
         uint256 tokenAmount = 50e18; // must be <= holdings * MAX_SELL_BPS / 10000
         token.transfer(address(token), holdings);
 
@@ -725,9 +862,9 @@ contract GooAgentTokenTest is TestSetup {
         token.survivalSell(1e18, 0, block.timestamp + 300);
     }
 
-    // ─── Events: CTOClaimed / AgentWalletUpdated / StatusChanged ─────────
+    // ─── Events: CTOClaimed / OwnershipTransferred / StatusChanged ───────
 
-    function test_ClaimCTO_EmitsCTOClaimedAndStatusChangedAndAgentWalletUpdated() public {
+    function test_ClaimCTO_EmitsCTOClaimedAndStatusChangedAndOwnershipTransferred() public {
         vm.prank(agentWallet);
         token.registerInRegistry("ipfs://genome");
 
@@ -747,11 +884,11 @@ contract GooAgentTokenTest is TestSetup {
 
         bool foundCTO;
         bool foundStatus;
-        bool foundAgentWalletUpdated;
+        bool foundOwnershipTransferred;
 
         bytes32 ctoSig = keccak256("CTOClaimed(address,uint256,uint256)");
         bytes32 statusSig = keccak256("StatusChanged(uint8,uint8,uint256)");
-        bytes32 walletUpdatedSig = keccak256("AgentWalletUpdated(address,address)");
+        bytes32 ownershipTransferredSig = keccak256("OwnershipTransferred(address,address)");
 
         for (uint256 i = 0; i < entries.length; i++) {
             if (entries[i].emitter != address(token)) continue;
@@ -771,19 +908,19 @@ contract GooAgentTokenTest is TestSetup {
                 assertEq(oldStatus, uint8(IGooAgentToken.AgentStatus.DYING));
                 assertEq(newStatus, uint8(IGooAgentToken.AgentStatus.ACTIVE));
                 assertEq(eventTs, ts);
-            } else if (entries[i].topics[0] == walletUpdatedSig) {
-                foundAgentWalletUpdated = true;
-                address oldWallet = address(uint160(uint256(entries[i].topics[1])));
-                address newWallet = address(uint160(uint256(entries[i].topics[2])));
-                assertEq(oldWallet, agentWallet);
-                assertEq(newWallet, user1);
+            } else if (entries[i].topics[0] == ownershipTransferredSig) {
+                foundOwnershipTransferred = true;
+                address oldOwner = address(uint160(uint256(entries[i].topics[1])));
+                address newOwner = address(uint160(uint256(entries[i].topics[2])));
+                assertEq(oldOwner, deployer);
+                assertEq(newOwner, user1);
             }
         }
 
         assertTrue(foundCTO);
         assertTrue(foundStatus);
-        assertTrue(foundAgentWalletUpdated);
-        assertEq(token.agentWallet(), user1);
+        assertTrue(foundOwnershipTransferred);
+        assertEq(token.agentWallet(), agentWallet);
         assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
     }
 
@@ -793,7 +930,7 @@ contract GooAgentTokenTest is TestSetup {
         address oldExecutor = token.swapExecutor();
         address newExecutor = makeAddr("newExecutor");
 
-        vm.prank(agentWallet);
+        vm.prank(deployer);
         vm.expectEmit(true, true, false, false, address(token));
         emit IGooAgentToken.SwapExecutorUpdated(oldExecutor, newExecutor);
 
@@ -804,12 +941,12 @@ contract GooAgentTokenTest is TestSetup {
     function test_RevertWhen_SetSwapExecutor_NotAgentWallet() public {
         address newExecutor = makeAddr("newExecutor");
         vm.prank(user1);
-        vm.expectRevert("Goo: not agentWallet");
+        vm.expectRevert("Goo: not protocolAdmin");
         token.setSwapExecutor(newExecutor);
     }
 
     function test_RevertWhen_SetSwapExecutor_ZeroExecutor() public {
-        vm.prank(agentWallet);
+        vm.prank(deployer);
         vm.expectRevert("Goo: zero swapExecutor");
         token.setSwapExecutor(address(0));
     }

@@ -15,8 +15,6 @@ import {GooAgentRegistry} from "../src/GooAgentRegistry.sol";
 ///   REGISTRY       — GooAgentRegistry address (set to 0x0 to deploy a new one)
 ///
 /// Optional env vars (defaults match TestSetup.sol):
-///   FIXED_BURN_RATE         — default 1e15 (0.001 BNB/day)
-///   MIN_RUNWAY_HOURS        — default 72
 ///   STARVING_GRACE_PERIOD   — default 86400 (24h)
 ///   DYING_MAX_DURATION      — default 259200 (72h)
 ///   PULSE_TIMEOUT           — default 3600 (1h)
@@ -35,8 +33,6 @@ contract DeployScript is Script {
         address registry = vm.envOr("REGISTRY", address(0));
 
         // --- Optional (with defaults matching TestSetup.sol) ---
-        uint256 fixedBurnRate = vm.envOr("FIXED_BURN_RATE", uint256(0));
-        uint256 minRunwayHours = vm.envOr("MIN_RUNWAY_HOURS", uint256(72));
         uint256 starvingGracePeriod = vm.envOr("STARVING_GRACE_PERIOD", uint256(86400));
         uint256 dyingMaxDuration = vm.envOr("DYING_MAX_DURATION", uint256(259200));
         uint256 pulseTimeout = vm.envOr("PULSE_TIMEOUT", uint256(3600));
@@ -64,8 +60,6 @@ contract DeployScript is Script {
             agentWallet,
             router,
             registry,
-            fixedBurnRate,
-            minRunwayHours,
             starvingGracePeriod,
             dyingMaxDuration,
             pulseTimeout,

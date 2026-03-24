@@ -22,9 +22,9 @@ interface IERC8004 {
 ///
 /// @dev Design decisions:
 ///   - uint256 agentId (auto-increment) — simpler, ERC-721 compatible
-///   - Ownership-verified registration — caller must prove token control:
-///     msg.sender == tokenContract (factory) OR msg.sender == token.owner() (deployer)
-///   - Token address = Agent identity (primary); agentId NFT = ERC-8004 adapter
+///   - Token-contract-mediated registration and updates:
+///     the token contract is the only authorized Registry writer
+///   - Token address = Agent identity (primary); agentId NFT mirrors token.owner()
 ///   - ERC-165 supportsInterface declares IERC721 + IERC8004 support
 interface IGooAgentRegistry is IERC8004, IERC165 {
     // ─── Structs ──────────────────────────────────────────────────────────
@@ -32,18 +32,22 @@ interface IGooAgentRegistry is IERC8004, IERC165 {
     struct AgentRecord {
         address tokenContract; // The agent's ERC-20 token (IGooAgentToken)
         address agentWallet; // Runtime wallet address
-        address owner; // Current owner (creator initially)
+        address owner; // Current token owner mirror
         string genomeURI; // IPFS hash or URI for agent genome/config
         uint256 registeredAt; // block.timestamp of registration
     }
 
+    /// @notice Returns the protocol publisher address (controls PROTOCOL_ADMIN on all tokens).
+    function publisher() external view returns (address);
+
+    /// @notice Transfer publisher role (e.g. to multisig).
+    /// @dev Only callable by current publisher.
+    function transferPublisher(address newPublisher) external;
+
     // ─── Registration ─────────────────────────────────────────────────────
 
-    /// @notice Register a new agent. Mints an ERC-721 agentId to msg.sender.
-    /// @dev Ownership-verified — caller must prove control over tokenContract:
-    ///   - msg.sender == tokenContract (for factory/launch contracts), OR
-    ///   - msg.sender == Ownable(tokenContract).owner() (for individual deployers)
-    ///   Additional requirements:
+    /// @notice Register a new agent. Mints an ERC-721 agentId to token.owner().
+    /// @dev Only callable by tokenContract itself. Additional requirements:
     ///   - tokenContract must be a non-zero contract address
     ///   - tokenContract must not already be registered
     ///   - agentWallet must be a non-zero address
@@ -101,21 +105,20 @@ interface IGooAgentRegistry is IERC8004, IERC165 {
     // ─── Mutations ────────────────────────────────────────────────────────
 
     /// @notice Update the genome URI. Blocked if agent token status is DEAD.
-    /// @dev Only callable by agent owner (agentOwnerOf(agentId) == msg.sender).
+    /// @dev Only callable by the registered token contract.
     /// @param agentId The agent identifier
     /// @param newURI  New IPFS hash or URI
     function updateGenomeURI(uint256 agentId, string calldata newURI) external;
 
     /// @notice Update the agent wallet address.
-    /// @dev Only callable by agent owner.
+    /// @dev Only callable by the registered token contract.
     /// @param agentId   The agent identifier
     /// @param newWallet New wallet address (non-zero)
     function setAgentWallet(uint256 agentId, address newWallet) external;
 
-    /// @notice Transfer agent ownership.
-    /// @dev Callable by:
-    ///   - Current agent owner
-    ///   - The agent's token contract (for CTO mechanism)
+    /// @notice Transfer agent ownership (NFT + record.owner).
+    /// @dev Only callable by the registered token contract.
+    ///      Used to mirror token.owner() changes into Registry/NFT state.
     /// @param agentId  The agent identifier
     /// @param newOwner New owner address (non-zero)
     function transferAgentOwnership(uint256 agentId, address newOwner) external;

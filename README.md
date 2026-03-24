@@ -2,15 +2,15 @@
 
 **On-chain Goo protocol:** agent token standard (ERC-20 + BNB Treasury + Fee-on-Transfer + lifecycle + SurvivalSell + CTO) and agent registry (ERC-721 + minimal ERC-8004). Delivered as **interfaces** + **reference implementations** + **mocks** for tests and integrators. Single source of truth for the Goo contract API.
 
-- **License:** MIT
-- **Solidity:** ^0.8.24
+- **License:** MIT  
+- **Solidity:** ^0.8.24  
 - **Chain:** BSC (Testnet/Mainnet), Ethereum, or any EVM with a V2-style DEX (PancakeSwap/Uniswap).
 
 ---
 
 ## What is goo-contracts?
 
-Goo gives AI agents **economic life**: real consumption, real death, survival pressure. The **on-chain** layer is this repo: **IGooAgentToken** (token + treasury + lifecycle + survival economics) and **IGooAgentRegistry** (agent identity + ERC-8004). The **off-chain** runtime that calls these contracts is [goo-core](https://github.com/HertzFlow/goo-core).
+Goo gives AI agents **economic life**: real consumption, real death, survival pressure. The **on-chain** layer is this repo: **IGooAgentToken** (token + treasury + lifecycle + survival economics) and **IGooAgentRegistry** (agent identity + ERC-8004). The **off-chain** runtime that calls these contracts is [goo-core](../goo-core).
 
 - **Token (GooAgentToken):** ERC-20 with BNB treasury, Fee-on-Transfer (FoT), four-state lifecycle (ACTIVE → STARVING → DYING → DEAD), proof-of-life (Pulse), SurvivalSell (agent sells its tokens for BNB to fund treasury), optional treasury withdraw to agent wallet (V2), and CTO (Community Take Over in Dying).
 - **Registry (GooAgentRegistry):** ERC-721 + minimal ERC-8004 adapter. Maps agentId ↔ tokenContract ↔ agentWallet ↔ genomeURI. Used for discovery and agent-wallet binding.
@@ -29,15 +29,15 @@ Goo gives AI agents **economic life**: real consumption, real death, survival pr
 
 ## What goo-contracts implements
 
-| Component             | Description                                                                                                                                                                                                                                                                                                                                                                   |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **IGooAgentToken**    | Full token API: lifecycle (getAgentStatus, triggerStarving, triggerDying, triggerDead), treasury (treasuryBalance, depositToTreasury, starvingThreshold, withdrawToWallet), survival (survivalSell, emitPulse, maxSellBps), FoT (feeRate), CTO (claimCTO, minCtoAmount), config (agentWallet, lastPulseAt, fixedBurnRate, minRunwayHours, PULSE_TIMEOUT, etc.), swapExecutor. |
-| **GooAgentToken**     | Reference implementation: ERC20 + ReentrancyGuard, BNB treasury (includes agent wallet balance), FoT to contract, lifecycle state machine, SurvivalSell via ISwapExecutor, Pulse, withdrawToWallet (agent wallet only), claimCTO (ownership via Registry), burn-at-deploy (1 - circulationBps).                                                                               |
-| **IGooAgentRegistry** | Registry API: registerAgent, agentWalletOf (ERC-8004), tokenOf, agentIdByToken, getAgent, genomeURIOf, agentOwnerOf, totalAgents, updateGenomeURI, setAgentWallet, transferAgentOwnership.                                                                                                                                                                                    |
-| **GooAgentRegistry**  | Reference implementation: ERC-721, auto-increment agentId, ownership-verified registration (caller = token or token.owner()).                                                                                                                                                                                                                                                 |
-| **ISwapExecutor**     | Pluggable swap: executeSwap(token, tokenAmount, minNativeOut, recipient, deadline), router(), wrappedNative().                                                                                                                                                                                                                                                                |
-| **SwapExecutorV2**    | PancakeSwap/Uniswap V2 executor; FoT-safe swapExactTokensForETHSupportingFeeOnTransferTokens.                                                                                                                                                                                                                                                                                 |
-| **Mocks**             | MockStable, MockRouter, MockSwapExecutor for tests and local integrators.                                                                                                                                                                                                                                                                                                     |
+| Component | Description |
+|-----------|-------------|
+| **IGooAgentToken** | Full token API: lifecycle (getAgentStatus, triggerStarving, triggerDying, triggerDead), treasury (treasuryBalance, depositToTreasury, starvingThreshold, withdrawToWallet), survival (survivalSell, emitPulse, maxSellBps), FoT (feeRate), CTO (claimCTO, minCtoAmount), config (agentWallet, lastPulseAt, fixedBurnRate, minRunwayHours, PULSE_TIMEOUT, etc.), swapExecutor. |
+| **GooAgentToken** | Reference implementation: ERC20 + ReentrancyGuard, BNB treasury (includes agent wallet balance), FoT to contract, lifecycle state machine, SurvivalSell via ISwapExecutor, Pulse, withdrawToWallet (agent wallet only), claimCTO (ownership via Registry), burn-at-deploy (1 - circulationBps). |
+| **IGooAgentRegistry** | Registry API: registerAgent, agentWalletOf (ERC-8004), tokenOf, agentIdByToken, getAgent, genomeURIOf, agentOwnerOf, totalAgents, updateGenomeURI, setAgentWallet, transferAgentOwnership. |
+| **GooAgentRegistry** | Reference implementation: ERC-721, auto-increment agentId, ownership-verified registration (caller = token or token.owner()). |
+| **ISwapExecutor** | Pluggable swap: executeSwap(token, tokenAmount, minNativeOut, recipient, deadline), router(), wrappedNative(). |
+| **SwapExecutorV2** | PancakeSwap/Uniswap V2 executor; FoT-safe swapExactTokensForETHSupportingFeeOnTransferTokens. |
+| **Mocks** | MockStable, MockRouter, MockSwapExecutor for tests and local integrators. |
 
 ---
 
@@ -72,14 +72,14 @@ Consumers should depend on **interfaces** only for stability; use reference impl
 
 ## Lifecycle state machine (invariant)
 
-| Transition        | Condition                                                                                                                                   |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| ACTIVE → STARVING | Anyone calls `triggerStarving()` when treasuryBalance &lt; starvingThreshold().                                                             |
-| STARVING → ACTIVE | Recovery: anyone calls `depositToTreasury()` so balance ≥ starvingThreshold().                                                              |
-| STARVING → DYING  | Anyone calls `triggerDying()` when block.timestamp - starvingEnteredAt ≥ STARVING_GRACE_PERIOD.                                             |
-| DYING → ACTIVE    | Recovery: deposit (balance ≥ threshold) or anyone calls `claimCTO()` with msg.value ≥ minCtoAmount.                                         |
-| DYING → DEAD      | Anyone calls `triggerDead()` when status is DYING and (dyingEnteredAt + DYING_MAX_DURATION elapsed OR lastPulseAt + PULSE_TIMEOUT elapsed). |
-| DEAD              | Terminal; no exit.                                                                                                                          |
+| Transition | Condition |
+|------------|-----------|
+| ACTIVE → STARVING | Anyone calls `triggerStarving()` when treasuryBalance &lt; starvingThreshold(). |
+| STARVING → ACTIVE | Recovery: anyone calls `depositToTreasury()` so balance ≥ starvingThreshold(). |
+| STARVING → DYING | Anyone calls `triggerDying()` when block.timestamp - starvingEnteredAt ≥ STARVING_GRACE_PERIOD. |
+| DYING → ACTIVE | Recovery: deposit (balance ≥ threshold) or anyone calls `claimCTO()` with msg.value ≥ minCtoAmount. |
+| DYING → DEAD | Anyone calls `triggerDead()` when status is DYING and (dyingEnteredAt + DYING_MAX_DURATION elapsed OR lastPulseAt + PULSE_TIMEOUT elapsed). |
+| DEAD | Terminal; no exit. |
 
 **Critical:** `triggerDead()` is only callable from DYING. It must revert from ACTIVE or STARVING.
 
@@ -87,15 +87,15 @@ Consumers should depend on **interfaces** only for stability; use reference impl
 
 ## Permission matrix (invariant)
 
-| Function                                   | Caller                                           |
-| ------------------------------------------ | ------------------------------------------------ |
-| triggerStarving, triggerDying, triggerDead | Anyone (condition checks only)                   |
-| depositToTreasury                          | Anyone                                           |
-| claimCTO                                   | Anyone (only in DYING, msg.value ≥ minCtoAmount) |
-| survivalSell                               | **Agent wallet only**                            |
-| emitPulse                                  | **Agent wallet only**                            |
-| withdrawToWallet                           | **Agent wallet only** (V2)                       |
-| setSwapExecutor                            | **Agent wallet only**                            |
+| Function | Caller |
+|----------|--------|
+| triggerStarving, triggerDying, triggerDead | Anyone (condition checks only) |
+| depositToTreasury | Anyone |
+| claimCTO | Anyone (only in DYING, msg.value ≥ minCtoAmount) |
+| survivalSell | **Agent wallet only** |
+| emitPulse | **Agent wallet only** |
+| withdrawToWallet | **Agent wallet only** (V2) |
+| setSwapExecutor | **Agent wallet only** |
 
 Registry: registerAgent requires caller = token contract or token.owner(). updateGenomeURI, setAgentWallet, transferAgentOwnership are owner or token (for CTO).
 
@@ -143,55 +143,21 @@ goo-core reads state (getAgentStatus, treasuryBalance, starvingThreshold, lastPu
 
 ---
 
-## Launchpad Demo
-
-For a full working launchpad demo using these contracts, see [goo-launch](https://github.com/HertzFlow/goo-launch).
-
----
-
 ## Documentation
 
-| Doc                                                          | Description                                                                   |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| [docs/DESIGN.md](docs/DESIGN.md)                             | Architecture, lifecycle, treasury, FoT, CTO, Registry.                        |
-| [docs/INSTALL.md](docs/INSTALL.md)                           | Install, remappings, build, test, deploy.                                     |
-| [docs/GOO-CORE-INTEGRATION.md](docs/GOO-CORE-INTEGRATION.md) | How goo-core uses these contracts; ABIs and callers.                          |
-| [src/interfaces/README.md](src/interfaces/README.md)         | Interface overview and stability.                                             |
-| [src/mocks/README.md](src/mocks/README.md)                   | Mocks for tests and integrators.                                              |
-| [AI-AGENT-CONTEXT.md](AI-AGENT-CONTEXT.md)                   | Canonical terminology, state machine, permission matrix (for AI/maintainers). |
-
----
-
-## Partnerships & Contributors
-
-### Infra Support
-
-- VPS & Cloud Deploy: @AGOSCloud
-- X402 payment solution: @AEON_Community
-
-### DeFi Support
-
-- @PancakeSwap
-
-### Launchpad Support
-
-- @flapdotsh
-- @fourdotmemezh
-- @virtuals_io
-- @milady_bsc & @shawmakesmagic
-
-### Security Support
-
-- @GoPlusSecurity
-
-### General Support
-
-- @TrustWallet
-- @givemeonepeach
+| Doc | Description |
+|-----|-------------|
+| [docs/DESIGN.md](docs/DESIGN.md) | Architecture, lifecycle, treasury, FoT, CTO, Registry. |
+| [docs/INSTALL.md](docs/INSTALL.md) | Install, remappings, build, test, deploy. |
+| [docs/GOO-CORE-INTEGRATION.md](docs/GOO-CORE-INTEGRATION.md) | How goo-core uses these contracts; ABIs and callers. |
+| [src/interfaces/README.md](src/interfaces/README.md) | Interface overview and stability. |
+| [src/mocks/README.md](src/mocks/README.md) | Mocks for tests and integrators. |
+| [AI-AGENT-CONTEXT.md](AI-AGENT-CONTEXT.md) | Canonical terminology, state machine, permission matrix (for AI/maintainers). |
 
 ---
 
 ## References
 
-- [GOO-ECONOMICS.md](GOO-ECONOMICS.md) — Economics 4.0, Cyber Sovereign Entity, Goo protocol narrative.
-- [goo-core](https://github.com/HertzFlow/goo-core) — Off-chain runtime that calls these contracts.
+- [GOO-NARRATIVE.md](../../GOO-NARRATIVE.md) — Economics 4.0, Cyber Sovereign Entity.
+- [THESIS.md](../../THESIS.md) — Economic Agent thesis and eight rules.
+- [goo-core](../goo-core) — Off-chain runtime that calls these contracts.

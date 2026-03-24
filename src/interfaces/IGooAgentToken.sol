@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title IGooAgentToken — Goo Agent Token Standard Interface (v2.0)
+/// @title IGooAgentToken — Goo Agent Token Standard Interface (v3.1)
 /// @notice ERC-20 token with integrated BNB Treasury, Fee-on-Transfer,
-///         lifecycle state machine, survival economics, burn-at-deploy, and CTO.
+///         lifecycle state machine, survival economics, burn-at-deploy,
+///         owner role (admin), and emergency pause.
 ///
 /// @dev States: Spawn (deploy) → Active → Starving → Dying → Dead.
-///   Recovery is not a state: return to Active via deposit (e.g. Deployer) or Successor (CTO).
+///   Recovery is not a state: return to Active via deposit (e.g. Deployer) or triggerRecovery.
 ///   Permissionless state transitions; survivalSell/emitPulse onlyAgentWallet.
 ///   Token address = Agent identity (Registry). DEAD is irreversible.
 ///   Treasury is BNB-native — no stablecoin dependency.
+///
+///   Roles:
+///     PROTOCOL_ADMIN = dynamic, from REGISTRY.publisher() (pause, unpause, setSwapExecutor)
+///     owner          = admin/economic (FoT income, setAgentWallet, registry mgmt)
+///     AGENT_WALLET   = operational (survivalSell, emitPulse, withdrawToWallet, registerInRegistry)
 interface IGooAgentToken {
     // ─── Enums ────────────────────────────────────────────────────────────
 
@@ -17,21 +23,20 @@ interface IGooAgentToken {
     enum AgentStatus {
         ACTIVE, // Normal operation, treasury funded
         STARVING, // Treasury below threshold
-        DYING, // Grace period expired; survival + CTO window open
+        DYING, // Grace period expired; survival window open
         DEAD // Terminal, irreversible
     }
 
     // ─── Lifecycle State Machine ──────────────────────────────────────────
     //
-    // Spawn → Active → Starving → Dying → Dead. Recovery = deposit or CTO → Active.
+    // Spawn → Active → Starving → Dying → Dead. Recovery = deposit or triggerRecovery → Active.
     //
     // Canonical state transition table:
     //
-    //   ACTIVE    → STARVING : treasuryBalance < starvingThreshold()
-    //   STARVING  → ACTIVE   : treasuryBalance ≥ starvingThreshold() (Recovery: deposit)
-    //   STARVING  → DYING    : block.timestamp - starvingEnteredAt ≥ STARVING_GRACE_PERIOD
-    //   DYING     → ACTIVE   : treasuryBalance ≥ starvingThreshold() (Recovery: deposit)
-    //   DYING     → ACTIVE   : claimCTO() (Recovery: Successor/CTO)
+    //   ACTIVE    → STARVING : treasuryBalance < STARVING_THRESHOLD (0.015 BNB)
+    //   STARVING  → ACTIVE   : treasuryBalance ≥ STARVING_THRESHOLD (Recovery: deposit, triggerRecovery)
+    //   STARVING  → DYING    : grace period elapsed (time-only, no balance check)
+    //   DYING     → ACTIVE   : treasuryBalance ≥ STARVING_THRESHOLD (Recovery: deposit, triggerRecovery)
     //   DYING     → DEAD     : block.timestamp - dyingEnteredAt ≥ DYING_MAX_DURATION
     //   DYING     → DEAD     : block.timestamp - lastPulseAt ≥ PULSE_TIMEOUT
     //   DEAD      → (none)   : terminal state, no exit
@@ -45,10 +50,10 @@ interface IGooAgentToken {
     /// @notice Trigger transition to Starving (treasury below threshold).
     /// @dev Permissionless — anyone can call. Succeeds only if:
     ///   - Current status is ACTIVE
-    ///   - treasuryBalance < starvingThreshold()
+    ///   - treasuryBalance < STARVING_THRESHOLD
     function triggerStarving() external;
 
-    /// @notice Trigger transition to Dying (grace period expired; CTO window opens).
+    /// @notice Trigger transition to Dying (grace period expired, time-only).
     /// @dev Permissionless — anyone can call. Succeeds only if:
     ///   - Current status is STARVING
     ///   - block.timestamp - starvingEnteredAt >= STARVING_GRACE_PERIOD
@@ -61,6 +66,18 @@ interface IGooAgentToken {
     ///     (b) block.timestamp - lastPulseAt >= PULSE_TIMEOUT
     function triggerDead() external;
 
+    /// @notice Permissionless recovery: if treasury balance is healthy, revert to ACTIVE.
+    /// @dev Succeeds only if:
+    ///   - Current status is STARVING or DYING
+    ///   - treasuryBalance >= STARVING_THRESHOLD
+    function triggerRecovery() external;
+
+    /// @notice Unified lifecycle trigger — evaluates and executes the highest-priority transition.
+    /// @dev Permissionless. Single call replaces manual triggerStarving/Dying/Dead/Recovery.
+    ///   Priority: 1=recovery, 2=starving, 3=dying, 4=dead, 0=no-op.
+    /// @return action The transition performed (0=none, 1=recovery, 2=starving, 3=dying, 4=dead)
+    function triggerLifecycle() external returns (uint8 action);
+
     // ─── Treasury ─────────────────────────────────────────────────────────
 
     /// @notice Returns the current BNB balance in the treasury.
@@ -69,20 +86,22 @@ interface IGooAgentToken {
 
     /// @notice Deposit BNB into the agent's treasury.
     /// @dev Permissionless — anyone can call (donate to keep agent alive).
-    ///      If agent is in STARVING/DYING and deposit brings balance ≥ starvingThreshold(),
+    ///      If agent is in STARVING/DYING and deposit brings balance ≥ STARVING_THRESHOLD,
     ///      Recovery: status reverts to ACTIVE (anyone can fund, e.g. Deployer).
     function depositToTreasury() external payable;
 
-    /// @notice Returns the computed Starving threshold (treasury below this → Starving).
-    /// @dev starvingThreshold = fixedBurnRate * minRunwayHours / 24
-    ///      Used by triggerStarving() and by Recovery (deposit restores to Active).
+    /// @notice Returns the Starving threshold constant (0.015 BNB).
     /// @return The threshold in wei
     function starvingThreshold() external view returns (uint256);
+
+    /// @notice Deprecated — triggerDying is now time-only. Returns 0 for backward compat.
+    /// @return Always 0
+    function dyingThreshold() external view returns (uint256);
 
     // ─── Treasury Withdraw ─────────────────────────────────────────────────
 
     /// @notice Withdraw BNB from treasury to agent wallet.
-    /// @dev Restricted: onlyAgentWallet. Reverts if withdrawal would drop
+    /// @dev Restricted: onlyAgentWallet + whenNotPaused. Reverts if withdrawal would drop
     ///      treasuryBalance below starvingThreshold(). Sends BNB to agent wallet.
     /// @param amount BNB amount to withdraw in wei
     function withdrawToWallet(uint256 amount) external;
@@ -90,7 +109,7 @@ interface IGooAgentToken {
     // ─── Survival Economics ───────────────────────────────────────────────
 
     /// @notice Agent sells its own tokens for BNB to fund treasury.
-    /// @dev Restricted: onlyAgentWallet.
+    /// @dev Restricted: onlyAgentWallet + whenNotPaused.
     ///   - Subject to SURVIVAL_SELL_COOLDOWN between calls
     ///   - Subject to maxSellBps per-call cap (enforced on-chain)
     ///   - Sells through configured DEX router
@@ -100,7 +119,7 @@ interface IGooAgentToken {
     function survivalSell(uint256 tokenAmount, uint256 minNativeOut, uint256 deadline) external;
 
     /// @notice Emit Pulse (proof-of-life signal) from the agent.
-    /// @dev Restricted: onlyAgentWallet.
+    /// @dev Restricted: onlyAgentWallet + whenNotPaused.
     ///      Resets the pulse timer. If not called within PULSE_TIMEOUT
     ///      while in DYING, anyone can trigger DEAD state.
     function emitPulse() external;
@@ -117,22 +136,30 @@ interface IGooAgentToken {
     /// @return Fee rate (e.g., 500 = 5%)
     function feeRate() external view returns (uint256);
 
-    // ─── CTO (Recovery via Successor) ──────────────────────────────────────
+    // ─── Owner Role ────────────────────────────────────────────────────────
 
-    /// @notice CTO: inject BNB capital to take over agent ownership during DYING (Recovery via Successor).
-    /// @dev Permissionless — anyone can call. Succeeds only if:
-    ///   - Current status is DYING
-    ///   - msg.value >= minCtoAmount
-    ///   Atomic execution:
-    ///   1. BNB stays in contract (treasury)
-    ///   2. Ownership transferred to msg.sender (via Registry)
-    ///   3. Status restored to ACTIVE
-    function claimCTO() external payable;
+    /// @notice Returns the current owner address.
+    function owner() external view returns (address);
 
-    /// @notice Minimum BNB injection required for CTO claim.
-    /// @dev Immutable. Set at deployment.
-    /// @return Minimum amount in wei
-    function minCtoAmount() external view returns (uint256);
+    /// @notice Transfer ownership to a new address.
+    /// @dev Restricted: onlyOwner.
+    function transferOwnership(address newOwner) external;
+
+    /// @notice Update the agent wallet address.
+    /// @dev Restricted: onlyOwner.
+    function setAgentWallet(address newWallet) external;
+
+    // ─── Pausable ──────────────────────────────────────────────────────────
+
+    /// @notice Pause critical operations.
+    /// @dev Restricted: onlyProtocolAdmin (dynamic, from REGISTRY.publisher()).
+    function pause() external;
+
+    /// @notice Unpause operations.
+    /// @dev Restricted: onlyProtocolAdmin.
+    function unpause() external;
+
+    // NOTE: paused() is inherited from Pausable, not declared in this interface.
 
     // ─── Configuration (Read-only) ────────────────────────────────────────
 
@@ -159,26 +186,16 @@ interface IGooAgentToken {
 
     // ─── Protocol Parameters (all immutable, set at deployment) ──────────
 
-    /// @notice Daily operational cost in BNB (wei). 0 is valid (disables on-chain starving).
-    /// @dev Immutable. When 0, starvingThreshold() returns 0 — treasury can never be below threshold.
-    function fixedBurnRate() external view returns (uint256);
-
-    /// @notice Minimum runway hours used in starving threshold calculation.
-    /// @dev Immutable. starvingThreshold = fixedBurnRate * minRunwayHours / 24
-    function minRunwayHours() external view returns (uint256);
-
     /// @notice Starving → Dying grace period in seconds.
     /// @dev Immutable. Reference default: 86400 (24 hours).
-    ///      Recommended bound: >= 3600 (1 hour)
     function STARVING_GRACE_PERIOD() external view returns (uint256);
 
     /// @notice Maximum duration in Dying before forced death, in seconds.
-    /// @dev Immutable. Reference default: 604800 (7 days).
+    /// @dev Immutable. Reference default: 259200 (3 days).
     function DYING_MAX_DURATION() external view returns (uint256);
 
     /// @notice Pulse timeout in seconds. No Pulse in Dying within this → DEAD eligible.
     /// @dev Immutable. Reference default: 172800 (48 hours).
-    ///      Recommended bound: >= STARVING_GRACE_PERIOD
     function PULSE_TIMEOUT() external view returns (uint256);
 
     /// @notice Minimum interval between survivalSell calls, in seconds.
@@ -188,11 +205,11 @@ interface IGooAgentToken {
     // ─── Swap Executor ──────────────────────────────────────────────────
 
     /// @notice Returns the current swap executor address.
-    /// @dev Mutable — can be updated by agent wallet via setSwapExecutor().
+    /// @dev Mutable — can be updated by protocolAdmin via setSwapExecutor().
     function swapExecutor() external view returns (address);
 
     /// @notice Update the swap executor (e.g. migrate from V2 to V3).
-    /// @dev Restricted: onlyAgentWallet.
+    /// @dev Restricted: onlyProtocolAdmin.
     /// @param _newExecutor Address of the new ISwapExecutor contract
     function setSwapExecutor(address _newExecutor) external;
 
@@ -208,9 +225,9 @@ interface IGooAgentToken {
 
     event PulseEmitted(uint256 timestamp);
 
-    event CTOClaimed(address indexed newOwner, uint256 creditAmount, uint256 timestamp);
-
     event TreasuryWithdraw(address indexed to, uint256 amount, uint256 newBalance);
 
     event AgentWalletUpdated(address indexed oldWallet, address indexed newWallet);
+
+    event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
 }

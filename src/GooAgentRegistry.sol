@@ -26,7 +26,12 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
 
     // ─── Constructor ────────────────────────────────────────────────────
 
-    constructor() ERC721("Goo Agent", "GooA") {}
+    /// @notice Protocol publisher — controls PROTOCOL_ADMIN on all tokens.
+    address public publisher;
+
+    constructor() ERC721("Goo Agent", "GooA") {
+        publisher = msg.sender;
+    }
 
     // ─── Registration ───────────────────────────────────────────────────
 
@@ -42,20 +47,9 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
         require(agentWallet_ != address(0), "Registry: zero wallet");
         require(_tokenToAgent[tokenContract] == 0, "Registry: already registered");
 
-        // Ownership verification (Plan B):
-        //   msg.sender == tokenContract (factory/launcher call)
-        //   OR msg.sender == Ownable(tokenContract).owner()
-        bool isTokenContract = msg.sender == tokenContract;
-        bool isOwner = false;
-        if (!isTokenContract) {
-            // Try calling owner() — if it reverts, isOwner stays false
-            try this._tryGetOwner(tokenContract) returns (address tokenOwner) {
-                isOwner = (msg.sender == tokenOwner);
-            } catch {
-                // owner() not implemented or reverted
-            }
-        }
-        require(isTokenContract || isOwner, "Registry: unauthorized");
+        require(msg.sender == tokenContract, "Registry: unauthorized");
+
+        address tokenOwner = _getTokenOwner(tokenContract);
 
         // Assign agentId
         agentId = _nextAgentId++;
@@ -64,7 +58,7 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
         _agents[agentId] = AgentRecord({
             tokenContract: tokenContract,
             agentWallet: agentWallet_,
-            owner: msg.sender,
+            owner: tokenOwner,
             genomeURI: genomeURI,
             registeredAt: block.timestamp
         });
@@ -72,19 +66,10 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
         // Reverse mapping
         _tokenToAgent[tokenContract] = agentId;
 
-        // Mint ERC-721 NFT to registrant
-        _mint(msg.sender, agentId);
+        // Mint ERC-721 NFT to the current token owner.
+        _mint(tokenOwner, agentId);
 
-        emit AgentRegistered(agentId, tokenContract, msg.sender, agentWallet_, genomeURI);
-    }
-
-    /// @dev External helper for try/catch on owner() call.
-    ///      Must be external for try/catch to work on this contract.
-    function _tryGetOwner(address target) external view returns (address) {
-        // solhint-disable-next-line avoid-low-level-calls
-        (bool success, bytes memory data) = target.staticcall(abi.encodeWithSignature("owner()"));
-        require(success && data.length >= 32, "owner() failed");
-        return abi.decode(data, (address));
+        emit AgentRegistered(agentId, tokenContract, tokenOwner, agentWallet_, genomeURI);
     }
 
     // ─── Identity Lookups ───────────────────────────────────────────────
@@ -135,7 +120,7 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
     function updateGenomeURI(uint256 agentId, string calldata newURI) external override {
         AgentRecord storage record = _agents[agentId];
         require(record.tokenContract != address(0), "Registry: agent not found");
-        require(msg.sender == record.owner, "Registry: not owner");
+        _requireTokenContract(record.tokenContract);
 
         // Block if agent token is DEAD
         _requireNotDead(record.tokenContract);
@@ -148,7 +133,7 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
     function setAgentWallet(uint256 agentId, address newWallet) external override {
         AgentRecord storage record = _agents[agentId];
         require(record.tokenContract != address(0), "Registry: agent not found");
-        require(msg.sender == record.owner, "Registry: not owner");
+        _requireTokenContract(record.tokenContract);
         require(newWallet != address(0), "Registry: zero wallet");
 
         address oldWallet = record.agentWallet;
@@ -161,17 +146,37 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
         AgentRecord storage record = _agents[agentId];
         require(record.tokenContract != address(0), "Registry: agent not found");
         require(newOwner != address(0), "Registry: zero owner");
+        _requireTokenContract(record.tokenContract);
 
-        // Callable by: current owner OR the agent's token contract (for CTO)
-        require(msg.sender == record.owner || msg.sender == record.tokenContract, "Registry: unauthorized");
-
-        // Transfer ERC-721 NFT — _update() syncs record.owner and emits AgentOwnershipTransferred
+        // Transfer ERC-721 NFT + sync record.owner.
         _transfer(record.owner, newOwner, agentId);
     }
 
-    // ─── ERC-721 _update override (M03: sync AgentRecord.owner) ────────
+    // ─── ERC-721 admin surface ─────────────────────────────────────────
 
-    /// @dev Sync AgentRecord.owner on any ERC-721 transfer (including direct transferFrom/safeTransferFrom).
+    /// @dev agentId NFTs mirror token.owner() and are not user-transferable.
+    function approve(address, uint256) public pure override {
+        revert("Registry: approvals disabled");
+    }
+
+    /// @dev agentId NFTs mirror token.owner() and are not user-transferable.
+    function setApprovalForAll(address, bool) public pure override {
+        revert("Registry: approvals disabled");
+    }
+
+    /// @dev agentId NFTs mirror token.owner() and are not user-transferable.
+    function transferFrom(address, address, uint256) public pure override {
+        revert("Registry: non-transferable");
+    }
+
+    /// @dev agentId NFTs mirror token.owner() and are not user-transferable.
+    function safeTransferFrom(address, address, uint256, bytes memory) public pure override {
+        revert("Registry: non-transferable");
+    }
+
+    // ─── ERC-721 _update override (sync AgentRecord.owner) ─────────────
+
+    /// @dev Sync AgentRecord.owner when the Registry moves the mirror NFT internally.
     function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
         address from = super._update(to, tokenId, auth);
         if (from != address(0) && to != address(0)) {
@@ -188,7 +193,29 @@ contract GooAgentRegistry is ERC721, IGooAgentRegistry {
         return interfaceId == _IERC8004_ID || super.supportsInterface(interfaceId);
     }
 
+    // ─── Publisher Management ──────────────────────────────────────────
+
+    /// @notice Transfer publisher role (e.g. to multisig). Affects PROTOCOL_ADMIN on all tokens.
+    /// @dev Only callable by current publisher.
+    function transferPublisher(address newPublisher) external {
+        require(msg.sender == publisher, "Registry: not publisher");
+        require(newPublisher != address(0), "Registry: zero publisher");
+        publisher = newPublisher;
+    }
+
     // ─── Internal ───────────────────────────────────────────────────────
+
+    /// @dev Registry writes must be mediated by the token contract.
+    function _requireTokenContract(address tokenContract) internal view {
+        require(msg.sender == tokenContract, "Registry: unauthorized");
+    }
+
+    /// @dev Read owner() from token contract. Used to mint/sync the registry mirror.
+    function _getTokenOwner(address tokenContract) internal view returns (address) {
+        (bool success, bytes memory data) = tokenContract.staticcall(abi.encodeWithSignature("owner()"));
+        require(success && data.length >= 32, "Registry: owner() call failed");
+        return abi.decode(data, (address));
+    }
 
     /// @dev Check if agent token is DEAD. If getAgentStatus() returns DEAD (3), revert.
     function _requireNotDead(address tokenContract) internal view {

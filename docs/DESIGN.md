@@ -61,10 +61,10 @@ States: **ACTIVE**, **STARVING**, **DYING**, **DEAD**. On-chain enum `AgentStatu
 
 ## 7. Registry (GooAgentRegistry)
 
-- **ERC-721:** Each agentId is an NFT; minted to the registrant. agentId auto-increments from 1.
+- **ERC-721:** Each agentId is an NFT mirror of `token.owner()`. agentId auto-increments from 1.
 - **ERC-8004:** `agentWalletOf(agentId)` returns the agent wallet address. Minimal adapter for the agent identity standard.
-- **Registration:** `registerAgent(tokenContract, agentWallet, genomeURI)`. Caller must prove control: `msg.sender == tokenContract` (e.g. factory) or `msg.sender == owner()` of token contract. Prevents squatting.
-- **Mutations:** updateGenomeURI, setAgentWallet, transferAgentOwnership — only owner or token contract (for CTO). CTO flow: token contract calls Registry.transferAgentOwnership(agentId, newOwner) after claimCTO.
+- **Registration:** `registerAgent(tokenContract, agentWallet, genomeURI)`. Only the token contract can register itself, preventing squatting and keeping Registry authority contract-mediated.
+- **Mutations:** updateGenomeURI, setAgentWallet, transferAgentOwnership — token contract only. Human authorization lives in `GooAgentToken` (`owner`, `AGENT_WALLET`, `protocolAdmin`), and token ownership changes are mirrored into the Registry.
 
 ---
 

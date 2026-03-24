@@ -27,10 +27,10 @@ Do not remove or change existing function signatures. Extend with new functions 
 
 - **IERC8004:** agentWalletOf(agentId) → address.
 - **Struct:** AgentRecord { tokenContract, agentWallet, owner, genomeURI, registeredAt }.
-- **Registration:** registerAgent(tokenContract, agentWallet, genomeURI) → agentId. Caller must be token contract or token.owner().
+- **Registration:** registerAgent(tokenContract, agentWallet, genomeURI) → agentId. Caller must be the token contract itself.
 - **Lookups:** tokenOf(agentId), agentIdByToken(tokenContract), getAgent(agentId), genomeURIOf(agentId), agentOwnerOf(agentId), totalAgents().
 - **ERC-165:** supportsInterface(interfaceId).
-- **Mutations:** updateGenomeURI(agentId, newURI), setAgentWallet(agentId, newWallet), transferAgentOwnership(agentId, newOwner). Owner or token (for CTO).
+- **Mutations:** updateGenomeURI(agentId, newURI), setAgentWallet(agentId, newWallet), transferAgentOwnership(agentId, newOwner). Token contract only; human authorization flows through GooAgentToken.
 - **Events:** AgentRegistered, AgentWalletUpdated, GenomeURIUpdated, AgentOwnershipTransferred.
 
 ---

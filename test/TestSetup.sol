@@ -13,7 +13,7 @@ abstract contract TestSetup is Test {
     uint256 constant FIXED_BURN_RATE = 1e15; // 0.001 BNB/day
     uint256 constant MIN_RUNWAY_HOURS = 24;
     uint256 constant STARVING_GRACE_PERIOD = 86400; // 24h
-    uint256 constant DYING_MAX_DURATION = 604800; // 7 days
+    uint256 constant DYING_MAX_DURATION = 259200; // 3 days
     uint256 constant PULSE_TIMEOUT = 172800; // 48h
     uint256 constant SURVIVAL_SELL_COOLDOWN = 3600; // 1h
     uint256 constant MAX_SELL_BPS = 5000; // 50%
@@ -50,8 +50,6 @@ abstract contract TestSetup is Test {
             agentWallet,
             address(swapExecutor),
             address(registry),
-            FIXED_BURN_RATE,
-            MIN_RUNWAY_HOURS,
             STARVING_GRACE_PERIOD,
             DYING_MAX_DURATION,
             PULSE_TIMEOUT,
