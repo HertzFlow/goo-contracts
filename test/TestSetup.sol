@@ -55,7 +55,6 @@ abstract contract TestSetup is Test {
             PULSE_TIMEOUT,
             SURVIVAL_SELL_COOLDOWN,
             MAX_SELL_BPS,
-            MIN_CTO_AMOUNT,
             FEE_RATE_BPS,
             CIRCULATION_BPS
         );

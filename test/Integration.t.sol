@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import "./TestSetup.sol";
 import {IGooAgentToken} from "../src/interfaces/IGooAgentToken.sol";
 
-/// @title Integration tests: token + registry, full lifecycle, CTO
+/// @title Integration tests: token + registry and lifecycle
 contract IntegrationTest is TestSetup {
     function setUp() public {
         _deployTokenAndRegistry();
@@ -44,49 +44,7 @@ contract IntegrationTest is TestSetup {
         assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
     }
 
-    function test_CTO_FullFlow_SuccessorTakesOver() public {
-        vm.prank(agentWallet);
-        token.registerInRegistry("ipfs://genome");
-        uint256 agentId = registry.agentIdByToken(address(token));
-        assertEq(registry.agentOwnerOf(agentId), deployer);
-
-        vm.deal(agentWallet, 0);
-        vm.deal(address(token), 0);
-        token.triggerStarving();
-        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
-        token.triggerDying();
-
-        vm.prank(user1);
-        token.claimCTO{value: MIN_CTO_AMOUNT}();
-
-        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
-        assertEq(registry.agentOwnerOf(agentId), user1);
-        assertEq(registry.ownerOf(agentId), user1);
-        // AGENT_WALLET stays unchanged; the new owner updates it explicitly if needed.
-        assertEq(token.agentWallet(), agentWallet);
-        // BNB stays in contract treasury
-        assertEq(address(token).balance, MIN_CTO_AMOUNT);
-    }
-
-    function test_CTO_SuccessorCanActAsAgentWallet() public {
-        vm.prank(agentWallet);
-        token.registerInRegistry("ipfs://genome");
-
-        vm.deal(agentWallet, 0);
-        vm.deal(address(token), 0);
-        token.triggerStarving();
-        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
-        token.triggerDying();
-
-        // user1 claims CTO
-        vm.prank(user1);
-        token.claimCTO{value: MIN_CTO_AMOUNT}();
-
-        // AGENT_WALLET stays unchanged across CTO.
-        vm.prank(agentWallet);
-        token.emitPulse();
-        assertEq(token.lastPulseAt(), block.timestamp);
-    }
+    // CTO integration flow has been removed from the current token contract.
 
     function test_RegisterThenSurvivalSellThenRecovery() public {
         vm.prank(agentWallet);

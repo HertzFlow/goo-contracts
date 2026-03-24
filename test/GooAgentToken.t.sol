@@ -37,7 +37,7 @@ contract GooAgentTokenTest is TestSetup {
             address(registry),
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
-            MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
+            MAX_SELL_BPS, FEE_RATE_BPS,
             CIRCULATION_BPS
         );
     }
@@ -51,7 +51,7 @@ contract GooAgentTokenTest is TestSetup {
             address(registry),
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
-            MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
+            MAX_SELL_BPS, FEE_RATE_BPS,
             CIRCULATION_BPS
         );
     }
@@ -65,7 +65,7 @@ contract GooAgentTokenTest is TestSetup {
             address(registry),
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
-            0, MIN_CTO_AMOUNT, FEE_RATE_BPS,
+            0, FEE_RATE_BPS,
             CIRCULATION_BPS
         );
     }
@@ -520,59 +520,7 @@ contract GooAgentTokenTest is TestSetup {
         token.survivalSell(49e18, 0, block.timestamp + 300);
     }
 
-    // ─── CTO (Recovery: Successor) ───────────────────────────────────────
-
-    function test_ClaimCTO_RequiresRegistered() public {
-        vm.deal(agentWallet, 0);
-        vm.deal(address(token), 0);
-        token.triggerStarving();
-        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
-        token.triggerDying();
-        vm.prank(user1);
-        token.claimCTO{value: MIN_CTO_AMOUNT}();
-        assertEq(token.owner(), user1);
-        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
-    }
-
-    function test_RevertWhen_ClaimCTO_NotDying() public {
-        vm.prank(user1);
-        vm.expectRevert("Goo: not Dying");
-        token.claimCTO{value: MIN_CTO_AMOUNT}();
-    }
-
-    function test_RevertWhen_ClaimCTO_BelowMinAmount() public {
-        vm.deal(agentWallet, 0);
-        vm.deal(address(token), 0);
-        token.triggerStarving();
-        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
-        token.triggerDying();
-        vm.prank(user1);
-        vm.expectRevert("Goo: below minCtoAmount");
-        token.claimCTO{value: MIN_CTO_AMOUNT - 1}();
-    }
-
-    // ─── CTO keeps AGENT_WALLET unchanged ───────────────────────────────
-
-    function test_ClaimCTO_KeepsAgentWallet() public {
-        vm.prank(agentWallet);
-        token.registerInRegistry("ipfs://genome");
-
-        vm.deal(agentWallet, 0);
-        vm.deal(address(token), 0);
-        token.triggerStarving();
-        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
-        token.triggerDying();
-
-        address oldWallet = token.agentWallet();
-        assertEq(oldWallet, agentWallet);
-
-        vm.prank(user1);
-        token.claimCTO{value: MIN_CTO_AMOUNT}();
-
-        assertEq(token.owner(), user1);
-        assertEq(token.agentWallet(), agentWallet);
-        assertEq(token.AGENT_WALLET(), agentWallet);
-    }
+    // CTO flow has been removed from the current token contract.
 
     // ─── [M04] Recovery resets _lastPulseAt ──────────────────────────────
 
@@ -724,7 +672,6 @@ contract GooAgentTokenTest is TestSetup {
         assertEq(token.PULSE_TIMEOUT(), PULSE_TIMEOUT);
         assertEq(token.SURVIVAL_SELL_COOLDOWN(), SURVIVAL_SELL_COOLDOWN);
         assertEq(token.maxSellBps(), MAX_SELL_BPS);
-        assertEq(token.minCtoAmount(), MIN_CTO_AMOUNT);
         assertEq(token.feeRate(), FEE_RATE_BPS);
         assertEq(token.circulationBps(), CIRCULATION_BPS);
     }
@@ -739,7 +686,7 @@ contract GooAgentTokenTest is TestSetup {
             agentWallet, address(swapExecutor), address(registry),
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
-            MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
+            MAX_SELL_BPS, FEE_RATE_BPS,
             CIRCULATION_BPS
         );
         assertEq(agentWallet.balance, walletBefore + 0.5 ether);
@@ -751,7 +698,7 @@ contract GooAgentTokenTest is TestSetup {
             agentWallet, address(swapExecutor), address(registry),
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
-            MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
+            MAX_SELL_BPS, FEE_RATE_BPS,
             CIRCULATION_BPS
         );
         assertEq(uint256(t.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
@@ -764,7 +711,7 @@ contract GooAgentTokenTest is TestSetup {
             agentWallet, address(swapExecutor), address(registry),
             STARVING_GRACE_PERIOD, DYING_MAX_DURATION,
             PULSE_TIMEOUT, SURVIVAL_SELL_COOLDOWN,
-            MAX_SELL_BPS, MIN_CTO_AMOUNT, FEE_RATE_BPS,
+            MAX_SELL_BPS, FEE_RATE_BPS,
             5000 // 50% circulation
         );
         // totalSupply should be 50% of 1B (burned tokens reduce totalSupply)
@@ -862,67 +809,7 @@ contract GooAgentTokenTest is TestSetup {
         token.survivalSell(1e18, 0, block.timestamp + 300);
     }
 
-    // ─── Events: CTOClaimed / OwnershipTransferred / StatusChanged ───────
-
-    function test_ClaimCTO_EmitsCTOClaimedAndStatusChangedAndOwnershipTransferred() public {
-        vm.prank(agentWallet);
-        token.registerInRegistry("ipfs://genome");
-
-        vm.deal(agentWallet, 0);
-        vm.deal(address(token), 0);
-        token.triggerStarving();
-        vm.warp(block.timestamp + STARVING_GRACE_PERIOD + 1);
-        token.triggerDying();
-
-        uint256 ts = block.timestamp;
-
-        vm.recordLogs();
-        vm.prank(user1);
-        token.claimCTO{value: MIN_CTO_AMOUNT}();
-
-        Vm.Log[] memory entries = vm.getRecordedLogs();
-
-        bool foundCTO;
-        bool foundStatus;
-        bool foundOwnershipTransferred;
-
-        bytes32 ctoSig = keccak256("CTOClaimed(address,uint256,uint256)");
-        bytes32 statusSig = keccak256("StatusChanged(uint8,uint8,uint256)");
-        bytes32 ownershipTransferredSig = keccak256("OwnershipTransferred(address,address)");
-
-        for (uint256 i = 0; i < entries.length; i++) {
-            if (entries[i].emitter != address(token)) continue;
-
-            if (entries[i].topics[0] == ctoSig) {
-                foundCTO = true;
-                address newOwner = address(uint160(uint256(entries[i].topics[1])));
-                (uint256 creditAmount, uint256 eventTs) = abi.decode(entries[i].data, (uint256, uint256));
-                assertEq(newOwner, user1);
-                assertEq(creditAmount, MIN_CTO_AMOUNT);
-                assertEq(eventTs, ts);
-            } else if (entries[i].topics[0] == statusSig) {
-                foundStatus = true;
-                uint8 oldStatus = uint8(uint256(entries[i].topics[1]));
-                uint8 newStatus = uint8(uint256(entries[i].topics[2]));
-                uint256 eventTs = abi.decode(entries[i].data, (uint256));
-                assertEq(oldStatus, uint8(IGooAgentToken.AgentStatus.DYING));
-                assertEq(newStatus, uint8(IGooAgentToken.AgentStatus.ACTIVE));
-                assertEq(eventTs, ts);
-            } else if (entries[i].topics[0] == ownershipTransferredSig) {
-                foundOwnershipTransferred = true;
-                address oldOwner = address(uint160(uint256(entries[i].topics[1])));
-                address newOwner = address(uint160(uint256(entries[i].topics[2])));
-                assertEq(oldOwner, deployer);
-                assertEq(newOwner, user1);
-            }
-        }
-
-        assertTrue(foundCTO);
-        assertTrue(foundStatus);
-        assertTrue(foundOwnershipTransferred);
-        assertEq(token.agentWallet(), agentWallet);
-        assertEq(uint256(token.getAgentStatus()), uint256(IGooAgentToken.AgentStatus.ACTIVE));
-    }
+    // CTO events removed with CTO flow.
 
     // ─── Events: SwapExecutorUpdated ──────────────────────────────────────
 
