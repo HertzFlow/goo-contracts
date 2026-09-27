@@ -34,10 +34,14 @@ contract SwapExecutorV2 is ISwapExecutor {
         address recipient,
         uint256 deadline
     ) external override returns (uint256 nativeReceived) {
+        require(recipient != address(0), "SwapExecutor: zero recipient");
+
         // Pull tokens from caller (GooAgentToken — its _feeExempt flag is active)
         IERC20(token).transferFrom(msg.sender, address(this), tokenAmount);
 
-        // Approve router to spend tokens
+        // Approve router to spend tokens. The allowance is reset to 0 again further below
+        // (right after the swap) so a partial pull or a router that returns early can never
+        // leave a live standing allowance on this shared executor contract.
         IERC20(token).approve(router, tokenAmount);
 
         // Build swap path: token → WBNB
@@ -60,7 +64,15 @@ contract SwapExecutorV2 is ISwapExecutor {
         );
         require(ok, "SwapExecutor: swap failed");
 
+        // Clear the router allowance (defence-in-depth against residual allowances).
+        IERC20(token).approve(router, 0);
+
         nativeReceived = recipient.balance - balBefore;
+
+        // Reject a "successful" swap that produced no output. Without this check a router
+        // returning early with ok == true would consume the agent's tokens while the
+        // executor (and the treasury) reports a successful, zero-value sale.
+        require(nativeReceived > 0, "SwapExecutor: zero output");
     }
 
     /// @notice Update the DEX router (e.g. migrate from V2 to V3 adapter).

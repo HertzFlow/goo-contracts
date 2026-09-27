@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "forge-std/Script.sol";
 import {GooAgentToken} from "../src/GooAgentToken.sol";
 import {GooAgentRegistry} from "../src/GooAgentRegistry.sol";
+import {SwapExecutorV2} from "../src/SwapExecutorV2.sol";
 
 /// @title Deploy — Deploy GooAgentToken + optional Registry
 /// @dev Usage:
@@ -11,16 +12,23 @@ import {GooAgentRegistry} from "../src/GooAgentRegistry.sol";
 ///
 /// Required env vars:
 ///   AGENT_WALLET   — Agent runtime wallet
-///   ROUTER         — DEX Router address (PancakeSwap V2)
+///   ROUTER         — DEX Router address (PancakeSwap/Uniswap V2)
 ///   REGISTRY       — GooAgentRegistry address (set to 0x0 to deploy a new one)
 ///
-/// Optional env vars (defaults match TestSetup.sol):
+/// Optional env vars:
+///   SWAP_EXECUTOR  — an existing ISwapExecutor address. If unset (or 0x0) a
+///                    SwapExecutorV2(ROUTER) is deployed and used instead.
+///                    SECURITY: this must be an ISwapExecutor contract, NOT the V2
+///                    router itself. GooAgentToken's constructor immediately calls
+///                    ISwapExecutor(_swapExecutor).wrappedNative(), which a V2 router
+///                    does not implement — passing ROUTER here reverts the deployment.
+///
+/// Optional (defaults match TestSetup.sol):
 ///   STARVING_GRACE_PERIOD   — default 86400 (24h)
 ///   DYING_MAX_DURATION      — default 259200 (72h)
 ///   PULSE_TIMEOUT           — default 3600 (1h)
 ///   SURVIVAL_SELL_COOLDOWN  — default 300 (5 min)
 ///   MAX_SELL_BPS            — default 500 (5%)
-///   MIN_CTO_AMOUNT          — default 0.1 ether
 ///   FEE_RATE_BPS            — default 100 (1%)
 ///   CIRCULATION_BPS         — default 1000 (10%)
 ///   TOKEN_NAME              — default "Goo Agent"
@@ -31,6 +39,7 @@ contract DeployScript is Script {
         address agentWallet = vm.envAddress("AGENT_WALLET");
         address router = vm.envAddress("ROUTER");
         address registry = vm.envOr("REGISTRY", address(0));
+        address swapExecutor = vm.envOr("SWAP_EXECUTOR", address(0));
 
         // --- Optional (with defaults matching TestSetup.sol) ---
         uint256 starvingGracePeriod = vm.envOr("STARVING_GRACE_PERIOD", uint256(86400));
@@ -38,7 +47,6 @@ contract DeployScript is Script {
         uint256 pulseTimeout = vm.envOr("PULSE_TIMEOUT", uint256(3600));
         uint256 survivalSellCooldown = vm.envOr("SURVIVAL_SELL_COOLDOWN", uint256(300));
         uint256 maxSellBps = vm.envOr("MAX_SELL_BPS", uint256(500));
-        uint256 minCtoAmount = vm.envOr("MIN_CTO_AMOUNT", uint256(0.1 ether));
         uint256 feeRateBps = vm.envOr("FEE_RATE_BPS", uint256(100));
         uint256 circulationBps = vm.envOr("CIRCULATION_BPS", uint256(1000));
         string memory tokenName = vm.envOr("TOKEN_NAME", string("Goo Agent"));
@@ -54,18 +62,24 @@ contract DeployScript is Script {
             console.log("Registry deployed:", registry);
         }
 
+        // Deploy a SwapExecutorV2 wrapping ROUTER if no executor was supplied.
+        if (swapExecutor == address(0)) {
+            SwapExecutorV2 newExecutor = new SwapExecutorV2(router);
+            swapExecutor = address(newExecutor);
+            console.log("SwapExecutorV2 deployed:", swapExecutor);
+        }
+
         GooAgentToken token = new GooAgentToken{value: deployValue}(
             tokenName,
             tokenSymbol,
             agentWallet,
-            router,
+            swapExecutor,
             registry,
             starvingGracePeriod,
             dyingMaxDuration,
             pulseTimeout,
             survivalSellCooldown,
             maxSellBps,
-            minCtoAmount,
             feeRateBps,
             circulationBps
         );
@@ -73,6 +87,7 @@ contract DeployScript is Script {
         console.log("GooAgentToken deployed:", address(token));
         console.log("  agentWallet:", agentWallet);
         console.log("  router:", router);
+        console.log("  swapExecutor:", swapExecutor);
         console.log("  registry:", registry);
 
         vm.stopBroadcast();

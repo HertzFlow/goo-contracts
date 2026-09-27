@@ -209,8 +209,15 @@ contract GooAgentToken is ERC20, Pausable, ReentrancyGuard, IGooAgentToken {
             return;
         }
 
-        // DEAD or fee-exempt: no fee
-        if (_status == AgentStatus.DEAD || _feeExempt || FEE_RATE_BPS == 0) {
+        // DEAD or fee-exempt: no fee.
+        // Security: the survivalSell exemption is deliberately scoped to transfers whose
+        // `from` is this contract. `_feeExempt` is a contract-wide flag that stays set
+        // across the untrusted `swapExecutor.executeSwap` external call, and `swapExecutor`
+        // is controlled by PROTOCOL_ADMIN. Without the `from == address(this)` guard, a
+        // malicious or compromised executor could open this window itself and then move
+        // *any* holder's tokens fee-free (e.g. draining users who approved this token),
+        // silently breaking the fee-on-transfer invariant.
+        if (_status == AgentStatus.DEAD || (_feeExempt && from == address(this)) || FEE_RATE_BPS == 0) {
             super._update(from, to, amount);
             return;
         }
@@ -384,11 +391,20 @@ contract GooAgentToken is ERC20, Pausable, ReentrancyGuard, IGooAgentToken {
         require(amount > 0, "Goo: zero amount");
         require(address(this).balance >= amount, "Goo: insufficient balance");
 
-        (bool sent,) = AGENT_WALLET.call{value: amount}("");
-        require(sent, "Goo: BNB transfer failed");
-
+        // Checks-effects-interactions: evaluate every precondition *before* the external
+        // call so no untrusted code is reached from a state that has not been validated.
+        //
+        // NOTE: treasuryBalance() includes AGENT_WALLET.balance (GooAgentToken.sol
+        // treasuryBalance()), and these funds are sent TO AGENT_WALLET, so the total is
+        // arithmetically unchanged by this call. The guard below therefore only re-checks
+        // the pre-existing balance and can never be tripped by the withdrawal itself.
+        // Kept as defence-in-depth: if treasuryBalance() is ever redefined to exclude the
+        // agent wallet, this check becomes meaningful and must be evaluated first.
         uint256 newBalance = treasuryBalance();
         require(newBalance >= starvingThreshold(), "Goo: would starve");
+
+        (bool sent,) = AGENT_WALLET.call{value: amount}("");
+        require(sent, "Goo: BNB transfer failed");
 
         emit TreasuryWithdraw(AGENT_WALLET, amount, newBalance);
     }
@@ -420,6 +436,14 @@ contract GooAgentToken is ERC20, Pausable, ReentrancyGuard, IGooAgentToken {
 
         uint256 nativeBefore = address(this).balance;
 
+        // Security: enforce the caller-supplied slippage bound and expiry at the TOKEN level.
+        // minNativeOut/deadline were previously only forwarded to `swapExecutor`, so a
+        // compromised or buggy executor (swapExecutor is settable by PROTOCOL_ADMIN) could
+        // return successfully having sold the agent's tokens for ~0 BNB — the entire
+        // "SurvivalSell funds the treasury" mechanism would silently fail. The agent wallet
+        // is the only caller and cannot be assumed to audit every executor.
+        require(block.timestamp <= deadline, "Goo: survivalSell deadline expired");
+
         // Delegate swap to executor — proceeds sent to this contract (treasury)
         ISwapExecutor(swapExecutor).executeSwap(
             address(this),
@@ -429,7 +453,17 @@ contract GooAgentToken is ERC20, Pausable, ReentrancyGuard, IGooAgentToken {
             deadline
         );
 
+        // Security: clear the executor allowance. `swapExecutor` is a single, shared,
+        // admin-controlled address (script/Deploy.s.sol reuses one SWAP_EXECUTOR across
+        // tokens). If the executor pulls less than tokenAmount — or pulls nothing and
+        // still returns — a live standing ERC-20 allowance would persist on THIS token and
+        // could later be used to drain tokens that were transferred to the contract.
+        _approve(address(this), swapExecutor, 0);
+
         uint256 nativeReceived = address(this).balance - nativeBefore;
+
+        // Slippage protection: never accept a sale below the agent's minimum.
+        require(nativeReceived >= minNativeOut, "Goo: insufficient native output");
 
         _feeExempt = false;
 

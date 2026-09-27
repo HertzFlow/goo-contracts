@@ -4,14 +4,36 @@ on:
   push:
   pull_request:
 
+# Trust boundary: the default GITHUB_TOKEN can carry repo write permissions. This job
+# only ever needs to read the repository, so pin the token down to read-only for every
+# step (including third-party actions) instead of inheriting the org/repo default.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   forge-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2 (pinned by SHA, not tag)
+        with:
+          # Do not leave the token in .git/config for subsequent steps / PR forks.
+          persist-credentials: false
 
       - name: Install Foundry
+        # TODO(security): pin this action to a commit SHA as well. A mutable `@v1` tag
+        # means a re-pointed tag executes arbitrary code with this job's GITHUB_TOKEN.
+        # Deliberately NOT pinning a Foundry version here: the exact nightly/stable tag
+        # string must be confirmed against the toolchain's release list first, and a
+        # wrong guess would break CI. See the solc-version finding for the related
+        # reproducibility issue in foundry.toml.
         uses: foundry-rs/foundry-toolchain@v1
 
       - name: Install Solidity dependencies
@@ -19,8 +41,14 @@ jobs:
           rm -rf lib
           mkdir -p lib
 
-          git clone --depth 1 --branch v5.6.1 https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
-          git clone --depth 1 --branch v5.6.1 https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git lib/openzeppelin-contracts-upgradeable
+          # Security: clone by immutable commit SHA, not by mutable tag. The revisions
+          # below are the ones already recorded in foundry.lock; using them keeps CI
+          # reproducible and prevents a re-pointed `v5.6.1` tag from injecting
+          # arbitrary Solidity source into the build.
+          git clone https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+          git -C lib/openzeppelin-contracts checkout 5fd1781b1454fd1ef8e722282f86f9293cacf256 # v5.6.1
+          git clone https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git lib/openzeppelin-contracts-upgradeable
+          git -C lib/openzeppelin-contracts-upgradeable checkout 7bf4727aacdbfaa0f36cbd664654d0c9e1dc52bf # v5.6.1
 
           # OpenZeppelin installs `forge-std` and other tooling as nested submodules.
           git -C lib/openzeppelin-contracts submodule update --init --recursive --jobs 2
